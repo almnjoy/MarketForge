@@ -41,13 +41,12 @@ body {
 .brand { font-family: var(--serif); font-weight: 700; font-size: 1.25rem; letter-spacing: .02em;
   display: flex; align-items: center; }
 .brand::before { content: '⚡'; margin-right: 6px; }
-.brand.haslogo::before { content: ''; margin: 0; }       /* the logo replaces the bolt... */
-.brand.haslogo .brandtxt { display: none; }              /* ...and the text - the mark IS the brand */
-.brand img { height: 42px; margin-right: 9px; border-radius: 8px;
-  filter: drop-shadow(0 0 12px rgba(255,106,0,.35));
+.brand.haslogo::before { content: ''; margin: 0; }   /* the mark replaces the bolt; wordmark stays */
+.brand img { height: 32px; margin-right: 10px;
+  filter: drop-shadow(0 0 10px rgba(255,106,0,.3));
   transition: transform .2s ease, filter .2s ease; }
-.brand img:hover { transform: scale(1.07) rotate(-2deg);
-  filter: drop-shadow(0 0 20px rgba(255,106,0,.65)); }
+.brand img:hover { transform: scale(1.08) rotate(-3deg);
+  filter: drop-shadow(0 0 18px rgba(255,106,0,.6)); }
 .brandtxt span { color: var(--accent); }
 .brandtxt span::before { content: '//'; color: var(--primary); }
 .spacer { flex: 1; }

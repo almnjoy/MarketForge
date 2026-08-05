@@ -4,7 +4,7 @@ Record a product demo without recording your voice.
 
 ## The lazy path
 
-1. **Generate the narration in your own voice** (Voicebox running with a Kokoro
+1. **Generate the narration in your own voice** ([Voicebox](https://voicebox.sh/) running with a Kokoro
    profile):
    ```
    python demo/make-narration.py

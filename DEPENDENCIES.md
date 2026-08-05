@@ -20,7 +20,7 @@ No Docker. No database. No Node.js. No cloud account. Nothing phones home.
 |---|---|---|
 | **AI coding agent** (Claude Code, Codex, ...) | The COPILOT tab: chat answers, live panel building, day replays, rule tuning | Without it the desk is still a full scanner + manual trading surface. Set the model in `config.json` (`bridge_model`); override the binary with `CLAUDE_BIN`. |
 | **Ollama** | Catalyst **scoring** (signal vs noise, 0-100 + why) | `ollama pull qwen2.5:3b`, then `RADAR_USE_LLM=true` in `bot/.env`. Any OpenAI-compatible endpoint works. Without it: alerts, no scores - and auto-entries need scores. |
-| **Voicebox** (Kokoro voice) | A natural voice for spoken replies | Point `voicebox_url` in `config.json` at it. Without it the browser voice speaks. |
+| **[Voicebox](https://voicebox.sh/)** (Kokoro voice) | A natural voice for spoken replies | Local TTS app. Point `voicebox_url` in `config.json` at it. Without it the browser voice speaks. |
 | **Chrome or Edge** | Voice **input** (push-to-talk + hot mic) | Browser speech recognition. Everything else works in any modern browser. |
 | **Discord webhook** | Radar alerts pushed to your phone | `RADAR_DISCORD_WEBHOOK` in `bot/.env`. |
 | **FRED API key** | Richer macro context in the Market Brief | Free from the St. Louis Fed. `FRED_API_KEY` in `bot/.env`. |

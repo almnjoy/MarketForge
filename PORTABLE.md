@@ -13,7 +13,7 @@ and the AI copilot seat. No Docker, no servers, your keys never leave the machin
      comes alive: chat/voice answers, panel building, day replays.
    - **Ollama** (`ollama pull qwen2.5:3b`) -> flip `RADAR_USE_LLM=true` and the
      radar scores catalysts signal-vs-noise instead of alert-only.
-   - **Voicebox** with a Kokoro voice -> spoken replies (browser voice otherwise).
+   - **[Voicebox](https://voicebox.sh/)** with a Kokoro voice -> spoken replies (browser voice otherwise).
 
 ## Make it YOURS
 - **RULES tab** = the agent's plan: the whole pipeline explained + every knob

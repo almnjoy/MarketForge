@@ -1,6 +1,8 @@
 <div align="center">
 
-<img src="static/logo.svg" alt="Market Forge" width="340">
+<img src="static/logo-mark.svg" alt="Market Forge" width="112" height="112">
+
+# MARKET FORGE
 
 ### Your AI trading desk.
 
@@ -37,7 +39,7 @@ discipline **in code, not in willpower**.
 [Alpaca](https://alpaca.markets) account (paper keys to start).
 
 **Optional, each unlocking one thing:** an AI coding agent (the copilot) ·
-[Ollama](https://ollama.com) (catalyst scoring) · Voicebox (a natural voice) ·
+[Ollama](https://ollama.com) (catalyst scoring) · [Voicebox](https://voicebox.sh/) (a natural voice) ·
 Chrome/Edge (voice input) · a Discord webhook (phone alerts).
 
 No Docker, no database, no Node, no cloud account. Details: [DEPENDENCIES.md](DEPENDENCIES.md).
