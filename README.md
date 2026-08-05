@@ -1,39 +1,106 @@
-# MARKET FORGE - agentic trading cockpit
+<div align="center">
 
-(drop your logo at `static/logo.png` and it appears in the top bar)
-Ctrl+K opens the command palette - commands first, anything else goes straight to the copilot.
+<img src="static/logo.svg" alt="Market Forge" width="340">
 
-Two ways to run:
-- **run.bat** - Dustin's desk: dashboard talks to the bot on rocker (Docker, cron).
-- **run-portable.bat** - the FRIEND edition: bot engine EMBEDDED (bot/), one window,
-  no Docker, own Alpaca keys in bot/.env. See PORTABLE.md for the 10-minute setup.
+### Your AI trading desk.
 
-Local live dashboard designed to run three windows side by side (the 6-monitor
-energy on one desk):
+Catalyst radar, hard-coded discipline, and a copilot that builds your board in real time.<br>
+**Open source · runs on your machine · your keys never leave it · paper by default**
 
-1. **This dashboard** - `run.bat` (or `python app.py`) -> http://localhost:8410
-2. **Claude Code CLI** - `claude` in this folder (reads CLAUDE.md, becomes the copilot)
-3. **Voice** - built into the dashboard's COPILOT tab (Chrome mic + TTS), no extra app
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
+[![Discord](https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/JE8TEYZp2f)
 
-## Tabs
-- **OVERVIEW** - live account, positions, orders, big candlestick chart + headlines
-- **CATALYST_RADAR** - the bot's scored movers, live "now vs alert", trade from the card
-- **RETAIL_RADAR** - what Reddit's hot pages are pushing
-- **WORKBENCH** - Claude Code's canvas: every `panels/*.html` file renders live.
-  Ask CC to build/transform panels while you talk - the page morphs in real time.
-- **RULES** - live bot knobs (from rocker) + RULES.md side by side for tuning talks
-- **COPILOT** - chat + voice to CC via `chat-inbox.jsonl` / `chat-outbox.jsonl`
+[Website](https://madeformeai.com/marketforge) · [Docs](https://docs.madeformeai.com) (soon) · [Discord](https://discord.gg/JE8TEYZp2f) · [Agent install](AGENT-INSTALL.md)
 
-## Trade ticket
-Any Trade button opens the ticket: $ or shares, trailing-stop % (default 10), type
-`live` to arm. Buys with a trail are placed by the bot as buy -> confirm fill ->
-GTC trailing stop (whole shares auto-computed).
+<img src="docs/screenshots/radar.png" alt="Catalyst radar" width="850">
 
-## Workflow loop
-Talk (voice or type) in COPILOT -> CC reads chat-inbox.jsonl -> answers in
-chat-outbox.jsonl (spoken aloud) and/or builds WORKBENCH panels -> you eyeball, then
-pull the trigger on the ticket. CC never trades without an explicit instruction.
+</div>
 
-## Requirements
-Python 3.9+ on PATH. Chrome/Edge for voice. Bot reachable at the LAN address in
-config.json (rocker 10.20.20.100:8796).
+---
+
+## What is this
+
+Market Forge is a **local trading desk with an AI copilot in the seat next to you**.
+A scanner engine finds catalyst-driven movers, verifies every number against the
+live tape, scores them signal-vs-noise, and enforces hard risk gates. A dashboard
+renders it GridPulse-style. And a coding agent (Claude Code, Codex, any of them)
+drives the desk through plain files: you talk - by voice or chat - and it builds
+boards, replays your trading day, and honors your standing rules on every turn.
+
+It was built by a network engineer learning swing trading who wanted his
+discipline **in code, not in willpower**.
+
+## Install
+
+**One-liner (Windows PowerShell):**
+```powershell
+powershell -c "irm https://madeformeai.com/marketforge/install.ps1 | iex"
+```
+
+**One-liner (macOS / Linux):**
+```bash
+curl -fsSL https://madeformeai.com/marketforge/install.sh | bash
+```
+
+**Have your AI agent do it:** paste the block in [AGENT-INSTALL.md](AGENT-INSTALL.md)
+into your agent - it installs, configures your paper keys with you, and learns your plan.
+
+**Manual:** clone this repo, `pip install -r requirements.txt`, copy
+`bot/.env.template` to `bot/.env` with your [Alpaca](https://alpaca.markets) paper
+keys, then `run-portable.bat` (Windows) or `MF_EMBEDDED=1 python app.py`.
+Full walkthrough: [PORTABLE.md](PORTABLE.md).
+
+> Scripts fallback while the site propagates:
+> `irm https://raw.githubusercontent.com/almnjoy/MarketForge/main/install.ps1 | iex`
+
+## The desk
+
+| | |
+|---|---|
+| **Catalyst radar** | Alpaca movers screener, every % re-verified against real bars and the live tape (stale prints and split artifacts get dropped), LLM triage with news + Reddit hot-page buzz folded in, live "now vs alert" on every card. |
+| **Hard-coded discipline** | Fail-closed gates: conviction score floor, price floor, per-trade size, entries/day, total exposure, kill-switch. Every auto-entry exits via a GTC **trailing stop armed at fill** - no naked positions, ever. |
+| **The copilot** | Chat or talk (hot-mic, spoken replies). It builds live panels on the Workbench while you watch, honors your `memory.md` standing orders, explains any knob on the RULES tab, and replays your day from the journal - git history for your decisions. |
+
+<div align="center">
+<img src="docs/screenshots/copilot.png" alt="Copilot chat with the live bridge" width="850">
+<img src="docs/screenshots/workbench.png" alt="Workbench - panels the copilot builds live" width="850">
+</div>
+
+More of the cockpit: `Ctrl+K` command palette (anything it doesn't recognize goes
+to the copilot), saved boards, drag-resizable panels, market-session clock,
+activity dock with the agent's real tool steps, and a trade ticket where the
+trailing stop is filled in before you ever type "live".
+
+## How it fits together
+
+```
+you  ──voice/chat──>  dashboard (app.py, stdlib)  ──HTTP──>  bot engine (bot/, Flask)
+         │                    │                                 scanner · gates · orders
+         │                    ├── panels/*.html   <── the copilot writes files,
+         └── AI copilot ──────┼── chat-*.jsonl        the dashboard renders them
+             (any coding      ├── memory.md           live. Plain files = any
+              agent)          └── journal.jsonl       agent can drive the desk.
+```
+
+Two run modes: `run-portable.bat` = everything embedded in one window (this is
+the one you want). `run.bat` = dashboard only, engine hosted elsewhere.
+
+## Safety, plainly
+
+Ships in **paper mode** with **auto-trading double-locked off**. Going live is a
+deliberate, documented act ([PORTABLE.md](PORTABLE.md)) and starts hard-capped.
+The copilot is contractually forbidden (CLAUDE.md) from placing trades or
+touching risk settings without your explicit instruction. Market Forge is a
+research and education tool - not financial advice; trading involves substantial
+risk of loss.
+
+## Community
+
+Questions, setups, and boards worth stealing: [Discord](https://discord.gg/JE8TEYZp2f).
+Built by [@almnjoy](https://github.com/almnjoy) · part of the
+[MadeForMeAI](https://madeformeai.com) family.
+
+## License
+
+[MIT](LICENSE)
