@@ -1,0 +1,14 @@
+# secrets + personal state stay OFF the repo
+bot/.env
+bot/data/
+chat-inbox.jsonl
+chat-outbox.jsonl
+journal.jsonl
+memory.md
+saved-workbenches/
+panels/*
+!panels/00-welcome.html
+__pycache__/
+*.pyc
+bot-src.tgz
+nohup.out

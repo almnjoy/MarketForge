@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Market Forge</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand" id="brand"><img id="logo" src="/static/logo.svg" alt="Market Forge"
+    onload="document.getElementById('brand').classList.add('haslogo')"
+    onerror="if(!this.dataset.f){this.dataset.f=1;this.src='/static/logo.png'}else{this.style.display='none'}"><span class="brandtxt">MARKET<span>FORGE</span></span></div>
+  <span id="envBadge" class="badge">...</span>
+  <span id="ksDot" class="ks"><i class="dot"></i><em>kill-switch</em></span>
+  <span id="autoChip" class="chip" title="training-wheels auto-trading state">auto: ?</span>
+  <button id="hotMic" class="btn sm" title="Hot mic: always listening, from any tab (echo-guarded while the copilot speaks)">🎙 hot mic</button>
+  <button id="memBtn" class="btn sm" title="Trading memory - standing rules the copilot honors on every turn">🧠 memory</button>
+  <div class="spacer"></div>
+  <span id="mktClock" class="chip mkt"></span>
+  <span id="equityTicker" class="mono">$ --</span>
+  <span id="clock" class="mono dim"></span>
+</header>
+
+<div id="tape"><div class="tape-track" id="tapeTrack"><span class="tick dim">loading tape...</span></div></div>
+
+<nav id="tabs">
+  <button data-tab="overview" class="on">OVERVIEW</button>
+  <button data-tab="radar">CATALYST_RADAR</button>
+  <button data-tab="retail">RETAIL_RADAR</button>
+  <button data-tab="workbench">WORKBENCH</button>
+  <button data-tab="rules">RULES</button>
+  <button data-tab="journal">JOURNAL</button>
+  <button data-tab="copilot">COPILOT</button>
+</nav>
+
+<main>
+  <!-- OVERVIEW: account + chart wall (the 6-monitor energy, one screen) -->
+  <section id="view-overview" class="view on">
+    <div id="statRow" class="stat-row"></div>
+    <div class="two-col">
+      <div class="panel">
+        <div class="panel-h">CHART <input id="chartSym" class="syminput mono" value="SPY" maxlength="6">
+          <span class="dim" id="chartMeta"></span></div>
+        <div id="bigChart" class="chart-box">loading...</div>
+        <div id="chartNews" class="newslist"></div>
+      </div>
+      <div>
+        <div class="panel">
+          <div class="panel-h">POSITIONS <span id="posCount" class="dim"></span></div>
+          <div id="positions"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h">RECENT_ORDERS</div>
+          <div id="orders"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CATALYST RADAR -->
+  <section id="view-radar" class="view">
+    <div class="panel">
+      <div class="panel-h">CATALYST_RADAR <span id="radarCount" class="dim"></span>
+        <span id="lastScan" class="dim right"></span>
+        <button id="radarRefresh" class="btn sm" style="margin-left:10px">Re-scan</button></div>
+      <div id="radar" class="cards"></div>
+    </div>
+  </section>
+
+  <!-- RETAIL RADAR (reddit) -->
+  <section id="view-retail" class="view">
+    <div class="panel">
+      <div class="panel-h">RETAIL_RADAR · Reddit <span id="redditSubs" class="dim"></span></div>
+      <div id="reddit" class="cards"></div>
+    </div>
+  </section>
+
+  <!-- WORKBENCH: Claude Code's live canvas -->
+  <section id="view-workbench" class="view">
+    <div class="wb-bar">
+      <span class="dim">panels/ renders live - ask the copilot or CC to build/transform boards. Drag a card's corner to resize. <span id="wbCount"></span></span>
+      <span class="right"></span>
+      <input id="wbSaveName" class="syminput" style="width:180px;text-transform:none" placeholder="board name...">
+      <button id="wbSave" class="btn sm">Save board</button>
+      <select id="wbSavedList" class="syminput" style="width:210px;text-transform:none"><option value="">saved boards...</option></select>
+      <button id="wbLoad" class="btn sm">Load</button>
+    </div>
+    <div id="workbench" class="wb-grid"></div>
+  </section>
+
+  <!-- RULES: live bot knobs + the training-wheels doc -->
+  <section id="view-rules" class="view">
+    <div class="two-col">
+      <div class="panel"><div class="panel-h">LIVE BOT CONFIG <span class="dim">(what's running on rocker right now)</span></div>
+        <div id="botConfig"></div></div>
+      <div class="panel"><div class="panel-h">TRAINING-WHEELS RULES <span class="dim">(RULES.md - discuss + tweak with CC)</span></div>
+        <div id="rulesDoc" class="md"></div></div>
+    </div>
+  </section>
+
+  <!-- JOURNAL: the decision log - git history for your trading process -->
+  <section id="view-journal" class="view">
+    <div class="panel">
+      <div class="panel-h">JOURNAL · the decision log
+        <select id="jDay" class="syminput" style="width:150px;text-transform:none"></select>
+        <span class="dim">every scan, chat, build, and order - process over P/L</span>
+        <button id="jReplay" class="btn sm right">▶ Replay this day with the copilot</button></div>
+      <div id="jTimeline"></div>
+    </div>
+  </section>
+
+  <!-- COPILOT: the chat room (you + Claude Code, voice optional) -->
+  <section id="view-copilot" class="view">
+    <div class="panel copilot">
+      <div class="panel-h">COPILOT <span id="bridgeChip" class="chip">bridge: ...</span>
+        <button id="stopBtn" class="btn sm stop hidden" title="kill the in-flight turn + silence the voice">⏹ Stop</button>
+        <label class="right dim"><span id="vbDot" title="Voicebox"></span><input type="checkbox" id="ttsToggle" checked> speak replies</label></div>
+      <div id="chatLog" class="chatlog"></div>
+      <div class="chatrow">
+        <button id="micBtn" class="btn" title="hold-to-talk (Chrome)">🎤</button>
+        <input id="chatInput" placeholder="talk to your copilot... (CC reads chat-inbox.jsonl)">
+        <button id="chatSend" class="btn">Send</button>
+      </div>
+      <div class="dim hint">Live loop: you send → the bridge runs a headless claude turn automatically → the reply
+        renders here + speaks via Voicebox, and panels it builds appear on the Workbench. Your interactive
+        CC window stays the deep-work lane (big builds, rule changes, trades on your word).</div>
+    </div>
+  </section>
+</main>
+
+<!-- TRADE TICKET (global modal) -->
+<div id="ticket" class="modal hidden">
+  <div class="modal-card">
+    <div class="panel-h">TRADE <span id="tkSym" class="mono"></span> <span id="tkEnv" class="badge live">LIVE</span>
+      <button id="tkClose" class="btn sm right">✕</button></div>
+    <div class="tk-row">
+      <button class="btn side on" data-side="buy">BUY</button>
+      <button class="btn side" data-side="sell">SELL</button>
+    </div>
+    <div class="tk-row">
+      <label>$ <input id="tkNotional" type="number" value="50" min="1" class="mono"></label>
+      <label>or shares <input id="tkQty" type="number" placeholder="-" min="1" class="mono"></label>
+    </div>
+    <div class="tk-row">
+      <label>trailing stop % <input id="tkTrail" type="number" value="10" min="0" max="50" class="mono"></label>
+      <span class="dim">0 = no trail (buy only; sells ignore it)</span>
+    </div>
+    <div class="tk-row">
+      <input id="tkConfirm" placeholder='type "live" to arm' class="mono">
+      <button id="tkGo" class="btn go" disabled>Submit</button>
+    </div>
+    <div id="tkResult" class="tk-result mono"></div>
+  </div>
+</div>
+
+<!-- COMMAND PALETTE (Ctrl+K): commands first, anything else goes to the copilot -->
+<div id="palette" class="pal hidden">
+  <div class="pal-card">
+    <input id="palInput" placeholder="type a command, or just ask the copilot...   (Esc closes)" autocomplete="off">
+    <div id="palList"></div>
+  </div>
+</div>
+
+<!-- MEMORY DRAWER: standing preferences the copilot honors (memory.md) -->
+<div id="memDrawer" class="drawer hidden">
+  <div class="panel-h" style="margin:0 0 10px">MEMORY
+    <span class="dim">honored on every copilot turn</span>
+    <button id="memClose" class="btn sm right">✕</button></div>
+  <div id="memList"></div>
+  <div class="chatrow" style="margin-top:10px">
+    <input id="memInput" placeholder="add a rule or preference...">
+    <button id="memAdd" class="btn">Add</button>
+  </div>
+  <div class="dim hint">Lives in <code>memory.md</code>. Saying "remember ..." to the copilot updates it too.
+    This file IS the plan when this desk gets handed to someone else.</div>
+</div>
+
+<!-- TOASTS + ACTIVITY DOCK (one event bus, two views) -->
+<div id="toasts"></div>
+<div id="dock">
+  <div id="dockList" class="hidden"></div>
+  <div id="dockPill">quiet</div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
