@@ -12,3 +12,6 @@ __pycache__/
 *.pyc
 bot-src.tgz
 nohup.out
+
+# demo audio is generated locally, never committed
+demo/audio/

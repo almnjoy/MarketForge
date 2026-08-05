@@ -11,7 +11,7 @@ Catalyst radar, hard-coded discipline, and a copilot that builds your board in r
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
 [![Discord](https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/JE8TEYZp2f)
 
-[Website](https://madeformeai.com/marketforge) · [Docs](https://docs.madeformeai.com) (soon) · [Discord](https://discord.gg/JE8TEYZp2f) · [Agent install](AGENT-INSTALL.md)
+[Website](https://madeformeai.com/marketforge) · [Docs](https://docs.madeformeai.com/marketforge/index) · [Discord](https://discord.gg/JE8TEYZp2f) · [Agent install](AGENT-INSTALL.md) · [Dependencies](DEPENDENCIES.md)
 
 <img src="docs/screenshots/radar.png" alt="Catalyst radar" width="850">
 
@@ -30,6 +30,17 @@ boards, replays your trading day, and honors your standing rules on every turn.
 
 It was built by a network engineer learning swing trading who wanted his
 discipline **in code, not in willpower**.
+
+## What you need
+
+**Required:** Python 3.10+ · git · Flask (one `pip install`) · a free
+[Alpaca](https://alpaca.markets) account (paper keys to start).
+
+**Optional, each unlocking one thing:** an AI coding agent (the copilot) ·
+[Ollama](https://ollama.com) (catalyst scoring) · Voicebox (a natural voice) ·
+Chrome/Edge (voice input) · a Discord webhook (phone alerts).
+
+No Docker, no database, no Node, no cloud account. Details: [DEPENDENCIES.md](DEPENDENCIES.md).
 
 ## Install
 
