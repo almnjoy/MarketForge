@@ -24,15 +24,21 @@ if (Test-Path (Join-Path $dest ".git")) {
 }
 
 & $py.Source -m pip install -r (Join-Path $dest "requirements.txt") --quiet
-if (-not (Test-Path (Join-Path $dest "bot\.env"))) {
-  Copy-Item (Join-Path $dest "bot\.env.template") (Join-Path $dest "bot\.env")
-}
 
 Write-Host ""
 Write-Host "Installed to $dest" -ForegroundColor Green
-Write-Host "  1) Add your Alpaca PAPER keys to bot\.env   (free keys: alpaca.markets)"
-Write-Host "  2) Double-click run-portable.bat            ->  http://localhost:8410"
-Write-Host "  3) Optional: Claude Code CLI in that folder = your live copilot"
-Write-Host "  Full guide: PORTABLE.md - community: https://discord.gg/JE8TEYZp2f"
+Write-Host ""
+Write-Host "Next: guided setup - it takes your Alpaca keys, checks them, and detects" -ForegroundColor Cyan
+Write-Host "whether your account has real-time data." -ForegroundColor Cyan
+Write-Host ""
+Push-Location $dest
+& $py.Source setup.py
+Pop-Location
+
+Write-Host ""
+Write-Host "  Start the desk:  run-portable.bat   ->  http://localhost:8410"
+Write-Host "  Copilot:         open a terminal in $dest and start your coding agent"
+Write-Host "  Docs:            https://docs.madeformeai.com/marketforge/index"
+Write-Host "  Community:       https://discord.gg/JE8TEYZp2f"
 Write-Host ""
 Start-Process explorer $dest

@@ -21,12 +21,19 @@ fi
 
 "$PY" -m pip install -r "$DEST/requirements.txt" --quiet || \
   "$PY" -m pip install -r "$DEST/requirements.txt" --quiet --break-system-packages
-[ -f "$DEST/bot/.env" ] || cp "$DEST/bot/.env.template" "$DEST/bot/.env"
 
 echo ""
 echo "Installed to $DEST"
-echo "  1) Add your Alpaca PAPER keys to bot/.env   (free keys: alpaca.markets)"
-echo "  2) MF_EMBEDDED=1 $PY $DEST/app.py           ->  http://localhost:8410"
-echo "  3) Optional: Claude Code CLI in that folder = your live copilot"
-echo "  Full guide: $DEST/PORTABLE.md - community: https://discord.gg/JE8TEYZp2f"
+echo ""
+echo "Next: guided setup - it takes your Alpaca keys, checks them, and detects"
+echo "whether your account has real-time data."
+echo ""
+cd "$DEST" && "$PY" setup.py </dev/tty || \
+  echo "  (run it later with:  cd $DEST && $PY setup.py)"
+
+echo ""
+echo "  Start the desk:  MF_EMBEDDED=1 $PY $DEST/app.py  ->  http://localhost:8410"
+echo "  Copilot:         open a terminal in $DEST and start your coding agent"
+echo "  Docs:            https://docs.madeformeai.com/marketforge/index"
+echo "  Community:       https://discord.gg/JE8TEYZp2f"
 echo ""

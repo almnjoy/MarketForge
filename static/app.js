@@ -122,7 +122,21 @@ async function loadOverview() {
     const cfg = await J('/api/bot/config').catch(() => null);
     if (cfg?.radar_auto) {
       const a = cfg.radar_auto, on = a.execute && (cfg.env !== 'live' || a.live_enabled);
-      $('#autoChip').textContent = on ? `auto: ARMED · ${fmt$(a.notional, 0)}/trade · ${a.exit} ${(a.trail_pct * 100).toFixed(0)}%` : 'auto: OFF';
+      const mode = String(cfg.mode || '').toLowerCase();
+      $('#autoChip').textContent = on
+        ? `auto: ARMED · ${fmt$(a.notional, 0)}/trade · ${a.exit} ${(a.trail_pct * 100).toFixed(0)}%`
+        : (mode === 'research' ? 'research mode · no trading' : 'auto: OFF · manual only');
+      // data feed: SIP = paid real-time consolidated tape, IEX = free partial/delayed
+      const feed = String(cfg.data_feed || '').toLowerCase();
+      const fc = $('#feedChip');
+      if (feed) {
+        const rt = feed === 'sip';
+        fc.textContent = rt ? 'data: REAL-TIME (SIP)' : `data: ${feed.toUpperCase()} (free)`;
+        fc.style.color = rt ? 'var(--gain)' : '';
+        fc.style.borderColor = rt ? 'rgba(74,222,128,.45)' : '';
+        fc.title = rt ? 'Full consolidated tape, real time'
+                      : 'Free IEX feed: a slice of total volume. Subscribe to Alpaca real-time and rerun setup.py to switch.';
+      }
       window._cfg = cfg;
     }
   } catch (e) { $('#statRow').innerHTML = `<div class="stat"><div class="l">bot</div><div class="v down">unreachable</div><div class="dim">${esc(e.message)}</div></div>`; }

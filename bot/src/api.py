@@ -144,6 +144,8 @@ def api_config():
     suggestions (e.g. a 2%-of-equity default stake)."""
     return jsonify({
         "env": config.STOCK_ENV,
+        "data_feed": config._get("ALPACA_DATA_FEED", "iex"),
+        "mode": config._get("MF_MODE", ""),
         "auto_execute": (config._get("AUTO_EXECUTE", "false") or "false").lower() == "true",
         "require_llm_analysis": config.REQUIRE_LLM_ANALYSIS,
         "bankroll": cents_to_dollars(config.BOT_BANKROLL_CENTS),
