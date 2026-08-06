@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="static/logo-mark.svg" alt="Market Forge" width="112" height="112">
-
-# MARKET FORGE
+<img src="static/logo.svg" alt="Market Forge" width="340">
 
 ### Your AI trading desk.
 
@@ -85,19 +83,61 @@ to the copilot), saved boards, drag-resizable panels, market-session clock,
 activity dock with the agent's real tool steps, and a trade ticket where the
 trailing stop is filled in before you ever type "live".
 
-## How it fits together
+## How it works
 
-```
-you  ──voice/chat──>  dashboard (app.py, stdlib)  ──HTTP──>  bot engine (bot/, Flask)
-         │                    │                                 scanner · gates · orders
-         │                    ├── panels/*.html   <── the copilot writes files,
-         └── AI copilot ──────┼── chat-*.jsonl        the dashboard renders them
-             (any coding      ├── memory.md           live. Plain files = any
-              agent)          └── journal.jsonl       agent can drive the desk.
+In plain English: it watches the market for you, throws out the fake moves,
+rates what's left, checks it against **your** rules, and never lets a position
+sit without an exit.
+
+```mermaid
+flowchart TD
+    You(["You"]) <-->|"talk or type"| Desk["Market Forge<br/><small>runs on your computer</small>"]
+    Desk <-->|"asks it things, it builds you boards"| Copilot(["Your AI copilot"])
+
+    Desk --> Scan["Checks what's moving<br/><small>4 times a day</small>"]
+    Scan --> Real{"Is that move real?<br/><small>checks the live price itself</small>"}
+    Real -->|"no — stale or fake number"| Drop["Thrown out<br/><small>you never see it</small>"]
+    Real -->|"yes"| Rate["Reads the news and Reddit,<br/>rates it 0-100"]
+    Rate --> Rules{"Does it pass YOUR rules?<br/><small>score, price floor, daily limits</small>"}
+    Rules -->|"no"| Skip["Listed as noise<br/><small>nothing happens</small>"]
+    Rules -->|"yes"| Ready["On your radar<br/><small>with the reason why</small>"]
+
+    Ready --> Who{"Who pulls the trigger?"}
+    Who -->|"you — this is the default"| Manual["You click Trade"]
+    Who -->|"only if you switch it on"| Auto["It buys a small amount"]
+    Manual --> Exit["An automatic sell-stop is armed<br/><small>it follows the price up, never down</small>"]
+    Auto --> Exit
+    Exit --> Journal["Written to your journal:<br/>what happened and why"]
+    Skip --> Journal
+    Journal -->|"replay yesterday with me"| Copilot
+
+    classDef you fill:#4f9dff,stroke:#4f9dff,color:#04101f
+    classDef ai fill:#ff6a00,stroke:#ff6a00,color:#160a00
+    classDef step fill:#182131,stroke:#3d5372,color:#e6edf6
+    classDef gate fill:#2a1520,stroke:#f05252,color:#ffd7d7
+    classDef good fill:#0f2a1f,stroke:#34d399,color:#c9ffe9
+    classDef dead fill:#181d26,stroke:#4a5568,color:#93a3b8
+    class You you
+    class Copilot ai
+    class Desk,Scan,Rate,Ready,Manual,Auto,Journal step
+    class Real,Rules,Who gate
+    class Exit good
+    class Drop,Skip dead
 ```
 
-Two run modes: `run-portable.bat` = everything embedded in one window (this is
-the one you want). `run.bat` = dashboard only, engine hosted elsewhere.
+**The part that matters:** nothing trades itself unless you deliberately turn
+that on, and *every* entry - yours or its - gets an exit armed the moment it
+fills. See [rules and risk](https://docs.madeformeai.com/marketforge/rules-and-risk).
+
+<details>
+<summary>Under the hood (the technical version)</summary>
+
+<img src="docs/architecture.svg" alt="Market Forge architecture" width="100%">
+
+Two run modes: `run-portable.bat` = everything in one window (the one you want).
+`run.bat` = dashboard only, engine hosted elsewhere.
+
+</details>
 
 ## Safety, plainly
 

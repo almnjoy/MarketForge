@@ -41,8 +41,9 @@ body {
 .brand { font-family: var(--serif); font-weight: 700; font-size: 1.25rem; letter-spacing: .02em;
   display: flex; align-items: center; }
 .brand::before { content: '⚡'; margin-right: 6px; }
-.brand.haslogo::before { content: ''; margin: 0; }   /* the mark replaces the bolt; wordmark stays */
-.brand img { height: 32px; margin-right: 10px;
+.brand.haslogo::before { content: ''; margin: 0; }   /* the logo replaces the bolt... */
+.brand.haslogo .brandtxt { display: none; }          /* ...and the text - his mark has the wordmark */
+.brand img { height: 42px; margin-right: 9px; border-radius: 8px;
   filter: drop-shadow(0 0 10px rgba(255,106,0,.3));
   transition: transform .2s ease, filter .2s ease; }
 .brand img:hover { transform: scale(1.08) rotate(-3deg);
