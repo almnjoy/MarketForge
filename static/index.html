@@ -7,6 +7,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="/static/style.css">
+<script>
+/* Set the skin BEFORE first paint, otherwise you see a flash of forge on the way
+   to whatever the user actually picked. app.js re-applies and wires the picker. */
+try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') || 'forge'; } catch (e) {}
+</script>
 </head>
 <body>
 <header id="topbar">
@@ -32,19 +37,28 @@
   <button data-tab="radar">CATALYST_RADAR</button>
   <button data-tab="retail">RETAIL_RADAR</button>
   <button data-tab="workbench">WORKBENCH</button>
-  <button data-tab="rules">RULES</button>
   <button data-tab="journal">JOURNAL</button>
   <button data-tab="copilot">COPILOT</button>
+  <button data-tab="admin">ADMIN</button>
 </nav>
 
 <main>
   <!-- OVERVIEW: account + chart wall (the 6-monitor energy, one screen) -->
   <section id="view-overview" class="view on">
+    <!-- A position with no working sell order is the single worst state this app
+         can be in. It gets a red bar at the top of the desk, not a log line. -->
+    <div id="nakedBanner" class="naked hidden"></div>
     <div id="statRow" class="stat-row"></div>
     <div class="two-col">
       <div class="panel">
         <div class="panel-h">CHART <input id="chartSym" class="syminput mono" value="SPY" maxlength="6">
-          <span class="dim" id="chartMeta"></span></div>
+          <span class="dim" id="chartMeta"></span>
+          <span class="right chart-ranges" id="chartRanges">
+            <button data-r="1M">1M</button><button data-r="3M" class="on">3M</button>
+            <button data-r="6M">6M</button><button data-r="1Y">1Y</button>
+            <button data-t="candle" class="on tgl" title="candles / line">▮</button>
+          </span></div>
+        <div id="chartHover" class="chart-hover"></div>
         <div id="bigChart" class="chart-box">loading...</div>
         <div id="chartNews" class="newslist"></div>
       </div>
@@ -93,12 +107,85 @@
   </section>
 
   <!-- RULES: live bot knobs + the training-wheels doc -->
-  <section id="view-rules" class="view">
-    <div class="two-col">
-      <div class="panel"><div class="panel-h">LIVE BOT CONFIG <span class="dim">(what's running on rocker right now)</span></div>
-        <div id="botConfig"></div></div>
-      <div class="panel"><div class="panel-h">TRAINING-WHEELS RULES <span class="dim">(RULES.md - discuss + tweak with CC)</span></div>
-        <div id="rulesDoc" class="md"></div></div>
+
+  <!-- ADMIN: read-only. What is running, on which model, from which files.
+       Sub-tabbed, because all of it on one screen was a wall. No create/edit
+       controls anywhere - it answers "what is in place", nothing more. -->
+  <section id="view-admin" class="view">
+    <nav id="subtabs">
+      <button data-sub="status" class="on">Status</button>
+      <button data-sub="rules">Rules</button>
+      <button data-sub="usage">Usage</button>
+      <button data-sub="files">Files</button>
+      <button data-sub="activity">Activity</button>
+      <button data-sub="appearance">Appearance</button>
+    </nav>
+
+    <div id="sub-status" class="subview on">
+      <div id="adminRuntime" class="stat-row"></div>
+      <div class="panel">
+        <div class="panel-h">AGENT LANES <span class="dim">every model this desk talks to</span></div>
+        <div id="adminLanes"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-h">TRADING STATE <span class="dim">live from the engine</span></div>
+        <div id="adminTrading"></div>
+      </div>
+    </div>
+
+    <div id="sub-rules" class="subview">
+      <div class="two-col">
+        <div class="panel"><div class="panel-h">LIVE BOT CONFIG <span class="dim">(what the engine is running right now)</span></div>
+          <div id="botConfig"></div></div>
+        <div class="panel"><div class="panel-h">TRAINING-WHEELS RULES <span class="dim">(RULES.md - discuss + tweak with the copilot)</span></div>
+          <div id="rulesDoc" class="md"></div></div>
+      </div>
+    </div>
+
+    <div id="sub-usage" class="subview">
+      <div id="usageCards" class="stat-row"></div>
+      <div class="two-col">
+        <div class="panel"><div class="panel-h">BY MODEL</div><div id="usageModels"></div></div>
+        <div class="panel"><div class="panel-h">BY DAY</div><div id="usageDays"></div></div>
+      </div>
+      <div class="panel dim hint">Measured, not estimated: every bridge turn logs the real
+        <code>usage</code> and <code>total_cost_usd</code> the CLI reports. On a Max
+        subscription that figure is the API-equivalent value of work already covered by
+        the flat fee, not an extra charge. Your interactive terminal session is a separate
+        lane and is not counted here.</div>
+    </div>
+
+    <div id="sub-files" class="subview">
+      <div class="panel">
+        <div class="panel-h">FILES IN PLAY <span class="dim">the ones that actually govern behavior</span></div>
+        <div id="adminFiles"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-h">WHAT'S ON DISK</div>
+        <div id="adminCounts"></div>
+      </div>
+    </div>
+
+    <div id="sub-activity" class="subview">
+      <div class="panel">
+        <div class="panel-h">RECENT ACTIVITY <span class="dim">newest first, from journal.jsonl</span></div>
+        <div id="adminLog"></div>
+      </div>
+    </div>
+
+    <div id="sub-appearance" class="subview">
+      <div class="panel">
+        <div class="panel-h">SKIN</div>
+        <div class="themerow">
+          <select id="themePick" class="themepick" title="Your choice is remembered on this machine."></select>
+          <span class="dim">Remembered per machine. <code>config.json</code> &rarr; <code>theme</code> sets the default for a fresh install.</span>
+        </div>
+        <div id="themeNote" class="dim hint"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-h">VOICE</div>
+        <div id="adminVoice"></div>
+      </div>
     </div>
   </section>
 
@@ -114,20 +201,26 @@
   </section>
 
   <!-- COPILOT: the chat room (you + Claude Code, voice optional) -->
+  <!-- COPILOT: a conversation surface, not a form. Centered reading column,
+       assistant messages full-width and unboxed, composer pinned at the bottom. -->
   <section id="view-copilot" class="view">
-    <div class="panel copilot">
-      <div class="panel-h">COPILOT <span id="bridgeChip" class="chip">bridge: ...</span>
+    <div class="chatwrap">
+      <div class="chathead">
+        <span id="bridgeChip" class="chip">bridge: ...</span>
         <button id="stopBtn" class="btn sm stop hidden" title="kill the in-flight turn + silence the voice">⏹ Stop</button>
-        <label class="right dim"><span id="vbDot" title="Voicebox"></span><input type="checkbox" id="ttsToggle" checked> speak replies</label></div>
-      <div id="chatLog" class="chatlog"></div>
-      <div class="chatrow">
-        <button id="micBtn" class="btn" title="hold-to-talk (Chrome)">🎤</button>
-        <input id="chatInput" placeholder="talk to your copilot... (CC reads chat-inbox.jsonl)">
-        <button id="chatSend" class="btn">Send</button>
+        <label class="right dim"><span id="vbDot" title="Voicebox"></span><input type="checkbox" id="ttsToggle" checked> speak replies</label>
       </div>
-      <div class="dim hint">Live loop: you send → the bridge runs a headless claude turn automatically → the reply
-        renders here + speaks via Voicebox, and panels it builds appear on the Workbench. Your interactive
-        CC window stays the deep-work lane (big builds, rule changes, trades on your word).</div>
+      <div id="chatLog" class="chatlog"></div>
+      <div class="composer">
+        <div class="composer-box">
+          <textarea id="chatInput" rows="1" placeholder="Ask anything about the market, or tell me what to build..."></textarea>
+          <div class="composer-actions">
+            <button id="micBtn" class="cbtn" title="hold to talk (Chrome)">🎤</button>
+            <button id="chatSend" class="cbtn send" title="Send (Enter)">↑</button>
+          </div>
+        </div>
+        <div class="composer-hint">Enter to send · Shift+Enter for a new line · it builds on the Workbench while you talk</div>
+      </div>
     </div>
   </section>
 </main>

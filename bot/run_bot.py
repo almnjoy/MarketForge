@@ -2,7 +2,7 @@
 
 Runs the stock-bot engine locally: the Flask read/trade API plus a scheduler
 thread that fires the catalyst radar at 10a/12p/2p/4p ET on weekdays (the same
-cadence the Docker cron used on rocker).
+cadence a cron would use).
 
 Config comes from bot/.env (copy .env.template, add YOUR Alpaca keys).
 Everything is stdlib except Flask (pip install flask).
@@ -27,7 +27,7 @@ sys.path.insert(0, str(BOT / "src"))
 
 import config  # noqa: E402  (this import also loads bot/.env)
 
-SCAN_HOURS = {10, 12, 14, 16}   # ET, weekdays - matches the rocker cron
+SCAN_HOURS = {10, 12, 14, 16}   # ET, weekdays
 
 
 def _now_et():

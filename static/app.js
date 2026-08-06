@@ -1,5 +1,5 @@
 /* STOCKS//LOCAL frontend. Vanilla JS, no build step - CC edits this live.
-   Data flows: /api/bot/* (proxied rocker stock-bot), /api/panels + /api/panel
+   Data flows: /api/bot/* (the bot engine, embedded or remote), /api/panels + /api/panel
    (Workbench file bus), /api/chat* (copilot bus). */
 'use strict';
 const $ = (s) => document.querySelector(s);
@@ -11,10 +11,61 @@ const pctScale = (v) => { const a = Math.abs(v || 0); const t = a >= 10 ? 3 : a 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const J = async (url, opt) => { const r = await fetch(url, opt); return r.json(); };
 
+/* ---------- theme ----------
+   Skins are pure token blocks in style.css, switched by [data-theme] on <html>.
+   Order of precedence: this machine's saved pick -> config.json `theme` -> forge.
+   Applied BEFORE first paint (see the inline bootstrap in index.html) so there is
+   no flash of the wrong skin. Panels are told the theme too, since they render
+   inside iframes that do not inherit the attribute. */
+const THEMES = [
+  ['forge', 'forge'], ['vault', 'vault'], ['tape', 'tape'], ['broadsheet', 'daylight'],
+];
+function applyTheme(t, persist = true) {
+  if (!THEMES.some(([k]) => k === t)) t = 'forge';
+  document.documentElement.dataset.theme = t;
+  if (persist) localStorage.setItem('mfTheme', t);
+  const sel = $('#themePick'); if (sel) sel.value = t;
+  // iframes are separate documents: hand them the theme so panels match the app
+  document.querySelectorAll('#workbench iframe').forEach((f) => {
+    try { f.contentDocument.documentElement.dataset.theme = t; } catch {}
+  });
+}
+function initTheme(cfgTheme) {
+  const sel = $('#themePick');
+  if (sel && !sel.options.length) {
+    sel.innerHTML = THEMES.map(([k, label]) => `<option value="${k}">${label}</option>`).join('');
+    sel.onchange = () => applyTheme(sel.value);
+  }
+  const saved = localStorage.getItem('mfTheme');
+  applyTheme(saved || cfgTheme || 'forge', false);
+}
+initTheme();
+
 /* ---------- tabs ---------- */
 document.querySelectorAll('#tabs button').forEach((b) => b.onclick = () => {
   document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x === b));
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('on', v.id === 'view-' + b.dataset.tab));
+  // admin is a snapshot, not a live poll - refresh it when you open the tab
+  if (b.dataset.tab === 'admin') loadAdmin();
+});
+
+/* admin sub-tabs: the whole inventory on one screen was a wall */
+document.querySelectorAll('#subtabs button').forEach((b) => b.onclick = () => {
+  document.querySelectorAll('#subtabs button').forEach((x) => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.subview').forEach((v) => v.classList.toggle('on', v.id === 'sub-' + b.dataset.sub));
+});
+/* jump straight to an admin sub-tab (used by the Ctrl+K palette) */
+function subTo(sub) {
+  const t = document.querySelector('#tabs button[data-tab="admin"]'); if (t) t.click();
+  const b = document.querySelector(`#subtabs button[data-sub="${sub}"]`); if (b) b.click();
+}
+
+/* Esc closes a maximized panel (and only that - it must not steal Esc otherwise) */
+addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const m = document.querySelector('.wb-card.maximized');
+  if (m) { m.classList.remove('maximized'); document.body.classList.remove('has-max');
+           const b = m.querySelector('.wb-max'); if (b) b.textContent = '⤢'; }
 });
 
 /* ---------- clocks: local + NYSE session state (no holiday calendar - close enough) ---------- */
@@ -34,7 +85,7 @@ function marketClock() {
 marketClock(); setInterval(marketClock, 30000);
 
 /* ---------- candlestick SVG (no libs; gridlines + price axis + volume) ---------- */
-function candles(bars, w = 880, h = 340) {
+function candles(bars, w = 880, h = 340, type = 'candle') {
   if (!bars?.length) return '<div class="dim">no bars</div>';
   const PR = 56;                      // right gutter for the price axis
   const VH = 44, GAP = 14;            // volume strip height + gap
@@ -51,13 +102,22 @@ function candles(bars, w = 880, h = 340) {
     s += `<line x1="0" y1="${gy}" x2="${w - PR}" y2="${gy}" stroke="var(--border)" stroke-width="1" opacity=".6"/>`;
     s += `<text x="${w - PR + 6}" y="${gy + 4}" fill="var(--dim)" font-size="11.5">${fmtP(p)}</text>`;
   }
+  // line mode: one stroke over the closes, tinted by the period's direction
+  if (type === 'line') {
+    const pts = bars.map((b, i) => `${3 + i * cw + bw / 2},${y(b.c)}`).join(' ');
+    const rising = bars.at(-1).c >= bars[0].c;
+    s += `<polyline points="${pts}" fill="none" stroke="${rising ? 'var(--success)' : 'var(--danger)'}" ` +
+         `stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  }
   // candles + volume
   bars.forEach((b, i) => {
     const x = 3 + i * cw, cx = x + bw / 2, up = b.c >= b.o, col = up ? 'var(--success)' : 'var(--danger)';
-    s += `<line x1="${cx}" y1="${y(b.h)}" x2="${cx}" y2="${y(b.l)}" stroke="${col}" stroke-width="1.2"/>`;
-    const top = y(Math.max(b.o, b.c)), bh2 = Math.max(1.5, Math.abs(y(b.o) - y(b.c)));
-    s += `<rect x="${x}" y="${top}" width="${bw}" height="${bh2}" rx="1" fill="${col}" opacity="${up ? .95 : .85}">` +
-         `<title>${b.t}  O ${fmtP(b.o)}  H ${fmtP(b.h)}  L ${fmtP(b.l)}  C ${fmtP(b.c)}${b.v ? '  V ' + (b.v / 1e6).toFixed(1) + 'M' : ''}</title></rect>`;
+    if (type !== 'line') {
+      s += `<line x1="${cx}" y1="${y(b.h)}" x2="${cx}" y2="${y(b.l)}" stroke="${col}" stroke-width="1.2"/>`;
+      const top = y(Math.max(b.o, b.c)), bh2 = Math.max(1.5, Math.abs(y(b.o) - y(b.c)));
+      s += `<rect x="${x}" y="${top}" width="${bw}" height="${bh2}" rx="1" fill="${col}" opacity="${up ? .95 : .85}">` +
+           `<title>${b.t}  O ${fmtP(b.o)}  H ${fmtP(b.h)}  L ${fmtP(b.l)}  C ${fmtP(b.c)}${b.v ? '  V ' + (b.v / 1e6).toFixed(1) + 'M' : ''}</title></rect>`;
+    }
     if (b.v) {
       const vh = Math.max(1, (b.v / maxV) * VH);
       s += `<rect x="${x}" y="${h - 16 - vh}" width="${bw}" height="${vh}" fill="${col}" opacity=".35"/>`;
@@ -78,22 +138,70 @@ function candles(bars, w = 880, h = 340) {
 
 /* ---------- overview ---------- */
 let chartSym = 'SPY';
+/* Interactive chart: range switcher, candle/line toggle, and a crosshair that
+   reports the real OHLC of the bar under the pointer. The maths mirrors candles()
+   exactly - if you change padding or the price-axis width there, change it here. */
+const CHART_RANGES = { '1M': 22, '3M': 90, '6M': 132, '1Y': 252 };
+let chartRange = '3M', chartType = 'candle', chartBars = [];
+
+function wireChartHover() {
+  const box = $('#bigChart'), svg = box.querySelector('svg'), read = $('#chartHover');
+  if (!svg || !chartBars.length) return;
+  const W = 880, PR = 56, n = chartBars.length, cw = (W - PR - 6) / n;  // must match candles()
+  let cross = svg.querySelector('.xhair');
+  if (!cross) {
+    cross = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    cross.setAttribute('class', 'xhair'); cross.setAttribute('y1', 0);
+    cross.setAttribute('y2', 340); cross.setAttribute('stroke', 'var(--dim)');
+    cross.setAttribute('stroke-dasharray', '3 3'); cross.setAttribute('opacity', '0');
+    svg.appendChild(cross);
+  }
+  const move = (e) => {
+    const r = svg.getBoundingClientRect();
+    const px = ((e.clientX - r.left) / r.width) * W;
+    const i = Math.max(0, Math.min(n - 1, Math.floor((px - 3) / cw)));
+    const b = chartBars[i], x = 3 + i * cw + cw / 2;
+    cross.setAttribute('x1', x); cross.setAttribute('x2', x); cross.setAttribute('opacity', '.65');
+    const up = b.c >= b.o;
+    read.innerHTML = `<b>${esc(b.t || '')}</b> · O ${fmt$(b.o)} H ${fmt$(b.h)} ` +
+      `L ${fmt$(b.l)} <b class="${up ? 'up' : 'down'}">C ${fmt$(b.c)}</b>` +
+      (b.v ? ` · vol ${Number(b.v).toLocaleString()}` : '');
+    read.classList.add('on');
+  };
+  svg.onpointermove = move;
+  svg.onpointerleave = () => { cross.setAttribute('opacity', '0'); read.classList.remove('on'); };
+}
+
 async function loadChart() {
   const sym = chartSym;
   $('#bigChart').innerHTML = '<span class="dim">loading ' + esc(sym) + '...</span>';
   try {
-    const d = await J(`/api/bot/bars?symbol=${sym}&limit=90`);
+    const lim = CHART_RANGES[chartRange] || 90;
+    const d = await J(`/api/bot/bars?symbol=${sym}&limit=${lim}`);
     if (d.error) throw new Error(d.error);
-    const last = d.bars.at(-1), prev = d.bars.at(-2);
+    chartBars = d.bars || [];
+    const last = chartBars.at(-1), prev = chartBars.at(-2);
     const pct = prev ? ((last.c - prev.c) / prev.c * 100) : 0;
-    $('#chartMeta').innerHTML = `${fmt$(last.c)} <span class="${cls(pct)}">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span> · 90d daily`;
-    $('#bigChart').innerHTML = candles(d.bars);
+    $('#chartMeta').innerHTML = `${fmt$(last.c)} <span class="${cls(pct)}">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span> · ${chartBars.length} bars`;
+    $('#bigChart').innerHTML = candles(chartBars, 880, 340, chartType);
+    wireChartHover();
     const nw = await J(`/api/bot/news?symbol=${sym}&limit=6`);
     $('#chartNews').innerHTML = (nw.news || []).map(n =>
       `<a href="${esc(n.url)}" target="_blank">▸ [${esc(n.source || 'news')}] ${esc(n.headline)}</a>`).join('') || '';
   } catch (e) { $('#bigChart').innerHTML = `<span class="dim">chart error: ${esc(e.message)}</span>`; }
 }
 $('#chartSym').addEventListener('change', () => { chartSym = $('#chartSym').value.toUpperCase().trim() || 'SPY'; loadChart(); });
+$('#chartRanges').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.r) {
+    chartRange = b.dataset.r;
+    $('#chartRanges').querySelectorAll('[data-r]').forEach(x => x.classList.toggle('on', x === b));
+  } else if (b.dataset.t) {
+    chartType = chartType === 'candle' ? 'line' : 'candle';
+    b.textContent = chartType === 'candle' ? '▮' : '∿';
+  }
+  loadChart();
+});
 
 async function loadOverview() {
   try {
@@ -103,6 +211,11 @@ async function loadOverview() {
     const env = String(s.env || '?');
     const badge = $('#envBadge'); badge.textContent = env.toUpperCase();
     badge.className = 'badge ' + (env === 'live' ? 'live' : 'paper');
+    // The two desks look identical at a glance, so put the account in the TAB
+    // title and hang a red rail down the page when real money is on the line.
+    const live = env === 'live';
+    document.title = `${live ? '● LIVE' : 'paper'} · Market Forge :${location.port || '80'}`;
+    document.body.classList.toggle('live-mode', live);
     $('#ksDot').classList.toggle('tripped', s.kill_switch === 'tripped');
     $('#equityTicker').textContent = fmt$(s.equity);
     $('#statRow').innerHTML = [
@@ -199,11 +312,16 @@ async function loadReddit() {
 /* ---------- workbench (CC's live canvas; resizable, size-hinted, savable) ---------- */
 let panelState = '';
 const wbSizes = JSON.parse(localStorage.getItem('wbSizes') || '{}');  // {name: {w, h}} - survives restarts
-let sizeSaveTimer = null;
 function watchResize(card, name) {
+  // Per-card timer: a single shared one meant that resizing two panels in quick
+  // succession only ever persisted the last one.
+  let timer = null;
   new ResizeObserver(() => {
-    clearTimeout(sizeSaveTimer);
-    sizeSaveTimer = setTimeout(() => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      // Never persist the MAXIMIZED size - it is the viewport, and restoring it
+      // later would leave the card permanently full-screen-sized in the grid.
+      if (card.classList.contains('maximized')) return;
       wbSizes[name] = { w: card.offsetWidth, h: card.offsetHeight };
       localStorage.setItem('wbSizes', JSON.stringify(wbSizes));
     }, 400);
@@ -235,10 +353,24 @@ async function loadPanels(force = false) {
     const saved = wbSizes[p.name];
     if (saved?.w) { card.style.width = saved.w + 'px'; card.style.flex = 'none'; }
     if (saved?.h) card.style.height = saved.h + 'px';
-    card.innerHTML = `<div class="wb-t">${esc(p.title)}<span class="right dim">${esc(p.name)}</span></div>`;
+    // ⤢ maximizes a card to the whole viewport. A long "full page" board should be
+    // READ full-bleed, not squinted at through a 400px letterbox with two scrollbars.
+    card.innerHTML = `<div class="wb-t">${esc(p.title)}` +
+      `<span class="right dim">${esc(p.name)}</span>` +
+      `<button class="wb-max" title="expand to full screen (Esc to close)">⤢</button></div>`;
+    card.querySelector('.wb-max').onclick = (e) => {
+      e.stopPropagation();
+      const on = card.classList.toggle('maximized');
+      document.body.classList.toggle('has-max', on);
+      e.target.textContent = on ? '✕' : '⤢';
+    };
     const fr = document.createElement('iframe');
     fr.sandbox = 'allow-scripts allow-same-origin allow-popups';
     fr.src = `/api/panel?name=${encodeURIComponent(p.name)}&v=${p.mtime}`;
+    // an iframe is its own document and does NOT inherit [data-theme]
+    fr.onload = () => { try {
+      fr.contentDocument.documentElement.dataset.theme = document.documentElement.dataset.theme;
+    } catch {} };
     card.appendChild(fr); wb.appendChild(card);
     watchResize(card, p.name);
   }
@@ -311,7 +443,7 @@ async function loadRules() {
       `<div class="k ${hot ? 'hot' : ''}" style="cursor:pointer" title="click to discuss/tweak with the copilot" data-l="${esc(l)}" data-v="${esc(String(v ?? '--'))}">` +
       `<div class="l">${l}</div><div class="v">${esc(String(v ?? '--'))}</div></div>`).join('') + '</div>' +
       '<p class="dim">Click any knob to open a tweak conversation. Applying = config change + engine restart ' +
-      '(this desk: rocker .env + container recreate; the portable edition: local config).</p>';
+      '(edit bot/.env, then restart the desk).</p>';
     document.querySelectorAll('#botConfig .k').forEach(el => el.onclick = () =>
       palPrefill(`I want to look at the "${el.dataset.l}" knob (currently ${el.dataset.v}). Explain what it controls, the tradeoff of moving it, suggest a value for my style (check memory.md), and tell me exactly how to apply it.`));
   }
@@ -357,33 +489,193 @@ function renderTyping(elapsed) {
   if (!elapsed) { t?.remove(); return; }
   if (!t) {
     t = document.createElement('div');
-    t.id = 'typingMsg'; t.className = 'msg assistant typing';
+      t.id = 'typingMsg'; t.className = 'turn assistant typing';
     $('#chatLog').appendChild(t);
   }
-  t.innerHTML = `<div class="t">bridge · step ${bridgeSteps || 0}</div>` +
+  const lg = $('#chatLog');
+  const stick = lg.scrollHeight - lg.scrollTop - lg.clientHeight < 160;
+  t.innerHTML = `<div class="who">◆</div><div class="body">` +
+    `<div class="stamp">copilot · step ${bridgeSteps || 0}</div>` +
     `${bridgeStep ? esc(bridgeStep) : 'thinking'}<span class="dots"></span> ${elapsed}s` +
-    `<span class="stopmini" onclick="stopAll()" title="abort this turn">⏹ stop</span>`;
-  $('#chatLog').scrollTop = 1e9;
+    `<span class="stopmini" onclick="stopAll()" title="abort this turn">⏹ stop</span></div>`;
+  if (stick) lg.scrollTop = lg.scrollHeight;
 }
-let chatInit = false;   // refresh guard: NEVER read the backlog aloud on page load
+let chatInit = false;      // refresh guard: NEVER read the backlog aloud on page load
+const spokenKeys = new Set();  // identity of every message already accounted for
+
+// Diff by IDENTITY, not by array index. The list is re-sorted by ts on every
+// poll, and the interactive CC session appends to chat-outbox.jsonl out of band.
+// A message landing with a not-strictly-newest ts inserts into the MIDDLE, which
+// shifts an old already-spoken reply into the tail slot - and an index diff
+// (`msgs.slice(chatCount)`) then reads that old message aloud on every send.
+const msgKey = m => `${m.ts}|${m.role}|${String(m.text).length}|${String(m.text).slice(0, 64)}`;
+
 async function loadChat() {
   const d = await J('/api/chat').catch(() => null);
   if (!d) return;
   const msgs = [...d.inbox, ...d.outbox].sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
   if (chatInit && msgs.length === chatCount) return;
-  const newAssist = chatInit ? msgs.slice(chatCount).filter(m => m.role === 'assistant') : [];
   chatCount = msgs.length;
-  $('#chatLog').innerHTML = msgs.map(m =>
-    `<div class="msg ${m.role === 'user' ? 'user' : 'assistant'}"><div class="t">${esc(m.role)} · ${esc(String(m.ts).slice(5, 16).replace('T', ' '))}</div>${esc(m.text)}</div>`).join('');
-  $('#chatLog').scrollTop = 1e9;
+  // Stick to the bottom, but only if you were ALREADY there. Yanking the view
+  // down while someone is scrolled up reading an old answer is infuriating.
+  const log = $('#chatLog');
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 120;
+  const me = (window.__mfUser || 'You').trim().slice(0, 2).toUpperCase();
+  $('#chatLog').innerHTML = msgs.map(m => {
+    const mine = m.role === 'user';
+    return `<div class="turn ${mine ? 'user' : 'assistant'}">` +
+      `<div class="who">${mine ? esc(me) : '◆'}</div>` +
+      `<div class="body"><div class="stamp">${mine ? 'you' : 'copilot'} · ` +
+      `${esc(String(m.ts).slice(5, 16).replace('T', ' '))}</div>${esc(m.text)}</div></div>`;
+  }).join('');
+  // after layout, not during: scrollHeight is stale until the browser reflows
+  if (atBottom || !chatInit) requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
+
+  // first paint: mark everything as seen, say nothing
   if (!chatInit) {
-    chatInit = true;   // history rendered silently; only NEW replies get spoken
+    chatInit = true;
+    msgs.forEach(m => spokenKeys.add(msgKey(m)));
     return;
   }
-  const speakable = newAssist.filter(m => !String(m.text).startsWith('(stopped'));
+  const fresh = msgs.filter(m => !spokenKeys.has(msgKey(m)));
+  msgs.forEach(m => spokenKeys.add(msgKey(m)));
+  const speakable = fresh.filter(m => m.role === 'assistant' && !String(m.text).startsWith('(stopped'));
   if ($('#ttsToggle').checked && speakable.length) {
     speakText(speakable.map(m => m.text).join('. '));
   }
+}
+
+/* ---------- naked positions ----------
+   A position with no working sell order. Polled with the overview; arming is a
+   REAL order, so it always costs a deliberate click and a confirm. */
+async function loadNaked() {
+  const el = $('#nakedBanner'); if (!el) return;
+  const d = await J('/api/bot/unprotected').catch(() => null);
+  const rows = d && d.positions || [];
+  if (!rows.length) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  el.classList.remove('hidden');
+  el.innerHTML = `<h4>⚠ ${rows.length} position${rows.length === 1 ? '' : 's'} with NO exit armed</h4>` +
+    rows.map(r => `<div class="row"><b>${esc(r.symbol)}</b> ${r.qty} sh ` +
+      `<span class="dim">entry ${fmt$(r.avg_entry)} · now ${fmt$(r.price)}</span> ` +
+      `<span class="${cls(Number(r.unrealized_pl))}">${fmt$(r.unrealized_pl)}</span>` +
+      `<button class="btn sm right" onclick="protectPos('${esc(r.symbol)}')">Arm 10% trail</button></div>`).join('');
+}
+window.protectPos = async (symbol, trail = 10) => {
+  if (!confirm(`Arm a ${trail}% trailing stop on ${symbol}?\n\n` +
+               `This places a REAL GTC sell order with your broker.`)) return;
+  const r = await J('/api/bot/protect', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol, trail_pct: trail }),
+  }).catch((e) => ({ ok: false, error: String(e) }));
+  notify(r.ok ? `${symbol}: ${trail}% trail armed (${r.qty} sh)` : `protect failed: ${r.error}`,
+         r.ok ? 'ok' : 'err');
+  loadNaked(); loadOverview();
+};
+
+/* ---------- ADMIN: read-only inventory ----------
+   "What is running, on what model, from which files, and what has it cost."
+   No create/edit controls anywhere on this tab, on purpose. */
+const dur = (s) => s == null ? '' : s > 86400 ? `${(s / 86400).toFixed(1)}d`
+  : s > 3600 ? `${(s / 3600).toFixed(1)}h` : s > 60 ? `${Math.round(s / 60)}m` : `${Math.round(s)}s`;
+const kb = (b) => b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB' : b >= 1000 ? Math.round(b / 1000) + ' KB' : b + ' B';
+const tok = (n) => n == null ? '--' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M'
+  : n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n);
+
+async function loadAdmin() {
+  const d = await J('/api/admin').catch(() => null);
+  if (!d) { $('#adminLanes').innerHTML = '<span class="dim">admin unavailable</span>'; return; }
+  const r = d.runtime || {}, u = d.usage || {};
+
+  $('#adminRuntime').innerHTML = [
+    ['Uptime', dur(r.uptime_s), r.started || ''],
+    ['Mode', r.embedded ? 'embedded' : 'split', r.embedded ? 'engine runs in-process' : r.bot_base],
+    ['Python', r.python || '--', r.platform || ''],
+    ['Copilot spend', u.cost_usd != null ? fmt$(u.cost_usd, 2) : '--',
+      `${u.turns || 0} bridge turn${u.turns === 1 ? '' : 's'}`],
+    ['Tokens', tok(u.tokens_total), u.cached ? `${tok(u.cached)} cached` : ''],
+    ['Panels', String(d.counts?.panels ?? 0), `${d.counts?.boards ?? 0} saved board(s)`],
+  ].map(([l, v, s]) => `<div class="stat"><div class="l">${l}</div><div class="v">${esc(v)}</div>` +
+    `<div class="dim">${esc(s)}</div></div>`).join('');
+
+  $('#adminLanes').innerHTML = '<table class="admin"><tr><th>lane</th><th>model</th><th>runtime</th>' +
+    '<th>state</th><th class="r">turns</th><th class="r">last</th></tr>' +
+    (d.lanes || []).map(l => {
+      const st = l.enabled === false ? 'off' : (l.status || '');
+      const cl = /off|not found|external/.test(String(st)) ? 'dim' : 'up';
+      return `<tr><td><b>${esc(l.name)}</b><div class="dim">${esc(l.note || '')}</div></td>` +
+        `<td class="mono">${esc(l.model)}</td>` +
+        `<td class="dim mono">${esc(l.runtime)}${l.binary ? `<div class="faint">${esc(l.binary)}</div>` : ''}</td>` +
+        `<td class="${cl}">${esc(st)}</td>` +
+        `<td class="r mono">${l.turns ?? '--'}</td>` +
+        `<td class="r mono">${l.last_ms ? (l.last_ms / 1000).toFixed(0) + 's' : '--'}</td></tr>`;
+    }).join('') + '</table>';
+
+  $('#adminFiles').innerHTML = '<table class="admin"><tr><th>file</th><th>what it does</th>' +
+    '<th class="r">size</th><th class="r">changed</th></tr>' +
+    (d.files || []).map(f => `<tr><td class="mono ${f.exists ? '' : 'dim'}">${esc(f.label)}` +
+      `${f.exists ? '' : ' <span class="dim">(missing)</span>'}</td>` +
+      `<td class="dim">${esc(f.what)}</td>` +
+      `<td class="r mono">${f.exists ? kb(f.bytes) : '--'}</td>` +
+      `<td class="r dim mono">${esc(f.mtime || '--')}</td></tr>`).join('') + '</table>';
+
+  const t = d.trading || {};
+  $('#adminTrading').innerHTML = '<table class="admin">' + [
+    ['Account', String(t.env || '--').toUpperCase(), t.env === 'live' ? 'loss' : ''],
+    ['Data feed', String(t.feed || '--').toUpperCase(), ''],
+    ['Mode', t.mode || 'manual', ''],
+    ['Auto-entries', t.auto ? 'ARMED' : 'off', t.auto ? 'loss' : 'up'],
+    ['Live auto unlocked', t.live_auto ? 'YES' : 'no', t.live_auto ? 'loss' : 'up'],
+    ['Per trade', t.per_trade_cents != null ? fmt$(t.per_trade_cents / 100, 0) : '--', ''],
+    ['Max per day', t.max_per_day ?? '--', ''],
+    ['Min score', t.min_score ?? '--', ''],
+  ].map(([l, v, c]) => `<tr><td class="dim">${l}</td><td class="mono ${c}">${esc(String(v))}</td></tr>`).join('') + '</table>';
+
+  const c = d.counts || {};
+  $('#adminCounts').innerHTML = '<table class="admin">' +
+    Object.entries(c.journal_kinds || {}).sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `<tr><td class="dim">${esc(k)}</td><td class="r mono">${n}</td></tr>`).join('') +
+    `<tr><td class="dim">chat messages</td><td class="r mono">${c.chat ?? 0}</td></tr>` +
+    `<tr><td class="dim">journal entries</td><td class="r mono">${c.journal ?? 0}</td></tr></table>`;
+
+  // ---- usage: measured spend, the OpsCanvas AI-Usage framing but local
+  const bm = Object.entries(u.by_model || {}).sort((a, b) => b[1].cost_usd - a[1].cost_usd);
+  const bd = Object.entries(u.by_day || {}).sort((a, b) => b[0].localeCompare(a[0])).slice(0, 14);
+  const today = new Date().toISOString().slice(0, 10);
+  $('#usageCards').innerHTML = [
+    ['Total', u.cost_usd != null ? fmt$(u.cost_usd, 2) : '$0.00', `${u.turns || 0} turns`],
+    ['Today', fmt$((u.by_day || {})[today]?.cost_usd || 0, 2), `${(u.by_day || {})[today]?.turns || 0} turns`],
+    ['Tokens', tok(u.tokens_total), `${tok(u.cached)} read from cache`],
+    ['Avg / turn', u.turns ? fmt$(u.cost_usd / u.turns, 3) : '--', 'bridge lane only'],
+  ].map(([l, v, s]) => `<div class="stat"><div class="l">${l}</div><div class="v">${esc(v)}</div>` +
+    `<div class="dim">${esc(s)}</div></div>`).join('');
+  const bar = (v, max) => `<div class="ubar"><i style="width:${max ? Math.max(2, (v / max) * 100) : 0}%"></i></div>`;
+  const maxM = Math.max(1, ...bm.map(([, x]) => x.cost_usd));
+  $('#usageModels').innerHTML = bm.length ? '<table class="admin">' + bm.map(([m, x]) =>
+    `<tr><td class="mono">${esc(m)}${bar(x.cost_usd, maxM)}</td><td class="r mono">${fmt$(x.cost_usd, 2)}</td>` +
+    `<td class="r dim mono">${tok(x.tokens)}</td><td class="r dim mono">${x.turns}t</td></tr>`).join('') + '</table>'
+    : '<span class="dim">no bridge turns logged yet</span>';
+  const maxD = Math.max(1, ...bd.map(([, x]) => x.cost_usd));
+  $('#usageDays').innerHTML = bd.length ? '<table class="admin">' + bd.map(([day, x]) =>
+    `<tr><td class="mono">${esc(day)}${bar(x.cost_usd, maxD)}</td><td class="r mono">${fmt$(x.cost_usd, 2)}</td>` +
+    `<td class="r dim mono">${tok(x.tokens)}</td><td class="r dim mono">${x.turns}t</td></tr>`).join('') + '</table>'
+    : '<span class="dim">nothing yet</span>';
+
+  const voice = (d.lanes || []).find(l => /voice/i.test(l.name)) || {};
+  $('#adminVoice').innerHTML = '<table class="admin">' +
+    `<tr><td class="dim">Profile</td><td class="mono">${esc(voice.model || '--')}</td></tr>` +
+    `<tr><td class="dim">Server</td><td class="mono">${esc(voice.binary || '--')}</td></tr>` +
+    `<tr><td class="dim">State</td><td class="mono">${esc(voice.status || '--')}</td></tr></table>` +
+    '<div class="dim hint">Change the voice with <code>voicebox_profile</code> in <code>config.json</code>. ' +
+    'Presets need an engine, cloned voices reject one, and the relay negotiates that per profile.</div>';
+  $('#themeNote').textContent =
+    'Skins are token blocks in style.css. Panels follow the app, so a board built in one skin reads correctly in all of them.';
+
+  $('#adminLog').innerHTML = (d.recent || []).length
+    ? '<table class="admin">' + d.recent.map(e =>
+        `<tr><td class="dim mono" style="width:130px">${esc(String(e.ts || '').slice(5, 16).replace('T', ' '))}</td>` +
+        `<td class="mono" style="width:80px">${esc(e.kind || '')}</td>` +
+        `<td>${esc(e.text || '')}</td></tr>`).join('') + '</table>'
+    : '<span class="dim">nothing logged yet</span>';
 }
 
 /* ---------- voice out: Voicebox (kokoro @ 127.0.0.1:17493) first, browser fallback ---------- */
@@ -440,7 +732,17 @@ async function sendChat() {
   loadChat();
 }
 $('#chatSend').onclick = sendChat;
-$('#chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+// Enter sends, Shift+Enter is a newline (the convention everyone already knows).
+// The box grows with the text instead of scrolling a one-line input.
+const growInput = () => {
+  const ta = $('#chatInput');
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(220, ta.scrollHeight) + 'px';
+};
+$('#chatInput').addEventListener('input', growInput);
+$('#chatInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); setTimeout(growInput, 0); }
+});
 
 /* voice in: push-to-talk (#micBtn, COPILOT tab) + HOT MIC (#hotMic, topbar - always
    listening from ANY tab; the whole app is one page so tabs don't matter). Echo-guarded:
@@ -563,8 +865,13 @@ const PAL_STATIC = [
   { k: 'go: catalyst radar', ico: '▦', run: () => tabTo('radar') },
   { k: 'go: retail radar (reddit)', ico: '▦', run: () => tabTo('retail') },
   { k: 'go: workbench', ico: '▦', run: () => tabTo('workbench') },
-  { k: 'go: rules', ico: '▦', run: () => tabTo('rules') },
   { k: 'go: copilot', ico: '▦', run: () => tabTo('copilot') },
+  { k: 'go: journal', ico: '▦', run: () => tabTo('journal') },
+  // rules moved under Admin, so the palette has to open the tab AND the sub-tab
+  { k: 'go: rules', ico: '▦', run: () => subTo('rules') },
+  { k: 'go: usage / cost', ico: '$', run: () => subTo('usage') },
+  { k: 'go: admin', ico: '▦', run: () => subTo('status') },
+  { k: 'change skin / theme', ico: '◧', run: () => subTo('appearance') },
   { k: 're-scan radar', ico: '⟳', run: () => { tabTo('radar'); $('#radarRefresh').click(); } },
   { k: 'save board', ico: '💾', run: () => { tabTo('workbench'); $('#wbSaveName').focus(); } },
   { k: 'clear board (autosaves first)', ico: '🧹', run: clearBoard },
@@ -699,9 +1006,15 @@ loadTape(); setInterval(loadTape, 60000);
 vbHealth(); setInterval(vbHealth, 60000);
 loadSavedList(); setInterval(loadSavedList, 30000);
 loadMemory(); loadJournal(); setInterval(() => { if (document.querySelector('#view-journal.on')) loadJournal($('#jDay').value); }, 20000);
-J('/api/meta').then(m => { window._user = m.user || 'trader'; setTimeout(() => { if ($('#ttsToggle').checked) speakText(`Welcome back, ${window._user}.`); }, 1200); }).catch(() => {});
-loadOverview(); loadChart(); loadRadar(); loadReddit(); loadPanels(true); loadRules(); loadChat();
+J('/api/meta').then(m => {
+  window._user = m.user || 'trader';
+  window.__mfUser = m.user || 'You';        // avatar initials in the chat
+  initTheme(m.theme);                        // config default, if nothing saved locally
+  setTimeout(() => { if ($('#ttsToggle').checked) speakText(`Welcome back, ${window._user}.`); }, 1200);
+}).catch(() => {});
+loadOverview(); loadChart(); loadRadar(); loadReddit(); loadPanels(true); loadRules(); loadChat(); loadNaked();
 setInterval(loadOverview, 15000);
+setInterval(loadNaked, 20000);   // an unarmed position must surface fast
 setInterval(loadRadar, 30000);
 setInterval(loadReddit, 60000);
 setInterval(loadChat, 2500);

@@ -4,6 +4,7 @@ bot/data/
 chat-inbox.jsonl
 chat-outbox.jsonl
 journal.jsonl
+usage.jsonl
 memory.md
 saved-workbenches/
 panels/*
@@ -16,3 +17,6 @@ nohup.out
 # raw screen captures are huge (60MB+ per take) - only the cut MP4 ships
 demo/raw/
 demo/audio/
+
+# Claude Code per-machine tool allowlist - private, machine-specific
+.claude/settings.local.json

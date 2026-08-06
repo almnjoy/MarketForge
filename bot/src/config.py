@@ -161,7 +161,7 @@ RADAR_DISCORD_WEBHOOK = _get("RADAR_DISCORD_WEBHOOK", "") or ""
 # Defaults to the homelab Ollama on llmhub (free, private). Swap RADAR_LLM_BASE_URL
 # to OpenRouter/etc. to use a bigger model.
 RADAR_USE_LLM = (_get("RADAR_USE_LLM", "true") or "true").lower() == "true"
-RADAR_LLM_BASE_URL = _get("RADAR_LLM_BASE_URL", "http://10.20.20.104:11434/v1") or ""
+RADAR_LLM_BASE_URL = _get("RADAR_LLM_BASE_URL", "http://127.0.0.1:11434/v1") or ""
 RADAR_LLM_MODEL = _get("RADAR_LLM_MODEL", "qwen2.5:3b-16k") or ""
 
 # Reddit retail-buzz layer (2026-08-05, per Dustin: "Reddit is still KING on

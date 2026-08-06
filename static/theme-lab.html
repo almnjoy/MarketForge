@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="forge">
+<head>
+<meta charset="utf-8">
+<title>Market Forge - theme lab</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Instrument+Serif&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   THEME LAB - one markup tree, N themes, real Market Forge parts.
+   Axes per STYLE-ENGINE-REFERENCE: paper band / display / accent.
+   ============================================================ */
+
+/* ---- forge: today's theme, contrast-tuned ------------------
+   paper dark · display serif · accent warm
+   Fixes vs live: surfaces pushed toward true black (was blue-tinted),
+   body text lifted to ~13:1, grid dropped to a whisper behind text. */
+[data-theme="forge"]{
+  --bg:#0a0d13; --grid:rgba(46,60,84,.16); --grid-size:64px;
+  --panel:#121722; --panel2:#0e131c; --border:#232c3d;
+  --fg:#eef3fa; --dim:#93a3ba; --faint:#61708a;
+  --primary:#4f9dff; --accent:#ff6a00;
+  --gain:#34d399; --loss:#f05252;
+  --display:'Fraunces',Georgia,serif; --body:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
+  --radius:14px; --pad:18px; --kicker-style:italic; --kicker-tt:uppercase; --kicker-ls:.08em;
+  --num:'JetBrains Mono',monospace; --num-weight:500;
+}
+/* ---- vault: the Kalshi read ---------------------------------
+   paper dark(er) · display grotesk · accent cool-green
+   Near-black, no pattern, one accent, numbers get the size budget
+   instead of the chrome. Orange demoted to brand-only. */
+[data-theme="vault"]{
+  --bg:#08090c; --grid:transparent; --grid-size:64px;
+  --panel:#101318; --panel2:#0c0e12; --border:#1e232c;
+  --fg:#ffffff; --dim:#9aa3b2; --faint:#6b7280;
+  --primary:#00d68f; --accent:#00d68f;
+  --gain:#00d68f; --loss:#ff5c5c;
+  --display:'Inter',system-ui,sans-serif; --body:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
+  --radius:12px; --pad:20px; --kicker-style:normal; --kicker-tt:uppercase; --kicker-ls:.14em;
+  --num:'Inter',system-ui,sans-serif; --num-weight:700;
+}
+/* ---- tape: the trading desk terminal -------------------------
+   paper dark · display mono · accent amber
+   Everything mono, dense, amber on black. Maximum information
+   density, zero decoration. */
+[data-theme="tape"]{
+  --bg:#000000; --grid:transparent; --grid-size:64px;
+  --panel:#0b0b0b; --panel2:#070707; --border:#242018;
+  --fg:#ffd9a0; --dim:#b08d5c; --faint:#7a6034;
+  --primary:#ffb000; --accent:#ffb000;
+  --gain:#4ce660; --loss:#ff4d4d;
+  --display:'JetBrains Mono',monospace; --body:'JetBrains Mono',monospace; --mono:'JetBrains Mono',monospace;
+  --radius:2px; --pad:12px; --kicker-style:normal; --kicker-tt:uppercase; --kicker-ls:.06em;
+  --num:'JetBrains Mono',monospace; --num-weight:700;
+}
+/* ---- broadsheet: daylight mode --------------------------------
+   paper light · display serif-headline · accent warm
+   For a bright room. Keeps the forge orange as the only color that
+   isn't data. */
+[data-theme="broadsheet"]{
+  --bg:#f7f5f0; --grid:rgba(0,0,0,.035); --grid-size:32px;
+  --panel:#ffffff; --panel2:#faf8f4; --border:#ddd6c9;
+  --fg:#14181f; --dim:#5b6472; --faint:#8b94a3;
+  --primary:#b1440e; --accent:#d2560f;
+  --gain:#0f7b52; --loss:#c0342b;
+  --display:'Instrument Serif',Georgia,serif; --body:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
+  --radius:8px; --pad:18px; --kicker-style:normal; --kicker-tt:uppercase; --kicker-ls:.1em;
+  --num:'JetBrains Mono',monospace; --num-weight:500;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:15px/1.6 var(--body);
+  background-image:repeating-linear-gradient(0deg,var(--grid) 0 1px,transparent 1px var(--grid-size)),
+                   repeating-linear-gradient(90deg,var(--grid) 0 1px,transparent 1px var(--grid-size));
+}
+.lab{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--border);
+  padding:10px 18px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.lab b{font:600 12px/1 var(--body);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-right:6px}
+.lab button{background:transparent;border:1px solid var(--border);color:var(--dim);border-radius:99px;
+  padding:6px 14px;font:500 13px var(--body);cursor:pointer}
+.lab button.on{border-color:var(--accent);color:var(--accent)}
+.lab .note{margin-left:auto;color:var(--faint);font-size:12px}
+
+main{max-width:1240px;margin:0 auto;padding:20px}
+
+/* top bar + ticker */
+.top{display:flex;align-items:center;gap:12px;padding:12px 4px;flex-wrap:wrap}
+.brand{font:700 20px var(--display);letter-spacing:.02em}
+.brand i{color:var(--accent);font-style:normal}
+.chip{border:1px solid var(--border);border-radius:99px;padding:4px 12px;font-size:12px;color:var(--dim);background:var(--panel2)}
+.chip.live{border-color:var(--accent);color:var(--accent)}
+.equity{margin-left:auto;font:var(--num-weight) 22px var(--num);color:var(--primary)}
+.tape{display:flex;gap:26px;overflow:hidden;padding:9px 4px;border-block:1px solid var(--border);margin-bottom:18px}
+.tape span{white-space:nowrap;font:500 13px var(--num)}
+.up{color:var(--gain)} .down{color:var(--loss)}
+
+/* stat cards */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:18px}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:var(--pad)}
+.stat .l{font:500 11px var(--body);letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin-bottom:8px}
+.stat .v{font:var(--num-weight) 26px/1.1 var(--num)}
+.stat .s{font-size:12px;color:var(--faint);margin-top:5px}
+
+.two{display:grid;grid-template-columns:1.5fr 1fr;gap:14px}
+@media(max-width:900px){.two{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:var(--pad);margin-bottom:14px}
+.ph{font:600 12px var(--display);font-style:var(--kicker-style);text-transform:var(--kicker-tt);
+  letter-spacing:var(--kicker-ls);color:var(--accent);margin-bottom:14px}
+.ph::before{content:'// ';opacity:.75}
+
+/* radar card */
+.sig{border:1px solid var(--border);border-left:3px solid var(--primary);border-radius:var(--radius);
+  background:var(--panel2);padding:14px;margin-bottom:10px}
+.sig .r1{display:flex;align-items:baseline;gap:10px}
+.sig .sym{font:700 17px var(--num)}
+.sig .px{color:var(--dim);font:500 14px var(--num)}
+.sig .pct{margin-left:auto;font:700 15px var(--num)}
+.sig .why{color:var(--dim);font-size:13.5px;margin-top:8px}
+.score{display:inline-block;border:1px solid var(--accent);color:var(--accent);border-radius:99px;
+  padding:2px 9px;font:600 11px var(--num);margin-left:8px}
+
+/* table */
+table{width:100%;border-collapse:collapse;font:500 13.5px var(--num)}
+th{text-align:left;font:500 11px var(--body);letter-spacing:.1em;text-transform:uppercase;
+  color:var(--faint);padding:0 0 9px;border-bottom:1px solid var(--border)}
+td{padding:9px 0;border-bottom:1px solid var(--border)}
+td.r,th.r{text-align:right}
+
+/* the readability test - deliberately the smallest real text in the app */
+.prose{color:var(--dim);font-size:13.5px;line-height:1.72}
+.prose b{color:var(--fg)}
+.btn{background:transparent;border:1px solid var(--border);color:var(--dim);border-radius:8px;
+  padding:6px 13px;font:500 12.5px var(--body);cursor:pointer}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.meta{color:var(--faint);font-size:12px;margin-top:14px}
+h1.wb{font:700 30px/1.15 var(--display);margin:.1em 0 .25em}
+</style>
+</head>
+<body>
+
+<div class="lab">
+  <b>theme</b>
+  <button data-t="forge" class="on">forge (tuned)</button>
+  <button data-t="vault">vault (kalshi read)</button>
+  <button data-t="tape">tape (terminal)</button>
+  <button data-t="broadsheet">broadsheet (light)</button>
+  <span class="note">&larr; &rarr; to cycle &middot; same markup every time, only tokens change</span>
+</div>
+
+<main>
+  <div class="top">
+    <span class="brand">MARKET<i>FORGE</i></span>
+    <span class="chip live">PAPER</span>
+    <span class="chip">kill-switch</span>
+    <span class="chip">auto: OFF &middot; manual only</span>
+    <span class="chip">data: IEX (free)</span>
+    <span class="equity">$100,055.97</span>
+  </div>
+
+  <div class="tape">
+    <span>SPY <b>$770.60</b> <i class="up">&#9650; 0.11%</i></span>
+    <span>QQQ <b>$717.10</b> <i class="down">&#9660; 0.91%</i></span>
+    <span>NVDA <b>$219.86</b> <i class="up">&#9650; 0.32%</i></span>
+    <span>AAPL <b>$511.97</b> <i class="up">&#9650; 0.33%</i></span>
+    <span>TSLA <b>$321.46</b> <i class="down">&#9660; 1.81%</i></span>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="l">Equity</div><div class="v">$100,055.97</div></div>
+    <div class="stat"><div class="l">Cash</div><div class="v">$98,093.53</div></div>
+    <div class="stat"><div class="l">Positions</div><div class="v">$1,962.44</div><div class="s">9 open</div></div>
+    <div class="stat"><div class="l">Day P/L</div><div class="v up">+0.42%</div></div>
+    <div class="stat"><div class="l">Drawdown</div><div class="v">0.0%</div></div>
+    <div class="stat"><div class="l">Bankroll</div><div class="v">$1,000</div><div class="s">$0.00 used</div></div>
+  </div>
+
+  <div class="two">
+    <div>
+      <div class="panel">
+        <div class="ph">CATALYST_RADAR <span style="color:var(--faint);font-style:normal">(3)</span></div>
+
+        <div class="sig">
+          <div class="r1"><span class="sym">SNDK</span><span class="px">$1,302.02</span>
+            <span class="score">92</span><span class="pct up">&#9650; 18.4%</span></div>
+          <div class="why">Beat on revenue and raised guidance; the move is holding into the close on
+            4.1x average volume. Verified against the live tape, not the screener.</div>
+        </div>
+
+        <div class="sig">
+          <div class="r1"><span class="sym">AMD</span><span class="px">$481.84</span>
+            <span class="score">78</span><span class="pct up">&#9650; 6.2%</span></div>
+          <div class="why">Datacenter segment commentary. Real, but already extended into the print.</div>
+        </div>
+
+        <div class="sig" style="border-left-color:var(--loss);opacity:.72">
+          <div class="r1"><span class="sym">AMIX</span><span class="px">$2.11</span>
+            <span class="pct down">&#9660; 8.0%</span></div>
+          <div class="why"><b>Dropped.</b> Screener reported +466%. The tape says -8.0%. Stale print.</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="ph">POSITIONS</div>
+        <table>
+          <tr><th>sym</th><th class="r">qty</th><th class="r">entry</th><th class="r">now</th><th class="r">P/L</th></tr>
+          <tr><td><b>AAPL</b></td><td class="r">1</td><td class="r">$308.97</td><td class="r">$312.41</td><td class="r up">+$3.44</td></tr>
+          <tr><td><b>BEX</b></td><td class="r">8.51</td><td class="r">$23.50</td><td class="r">$28.63</td><td class="r up">+$43.66</td></tr>
+          <tr><td><b>HURN</b></td><td class="r">1.27</td><td class="r">$156.96</td><td class="r">$149.68</td><td class="r down">-$9.28</td></tr>
+          <tr><td><b>MAWH</b></td><td class="r">0.96</td><td class="r">$208.46</td><td class="r">$192.08</td><td class="r down">-$15.71</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <div class="ph">WORKBENCH &middot; the copilot's board</div>
+        <h1 class="wb">SPCX &mdash; Shorting The Lockup</h1>
+        <div class="prose">
+          <p><b>Your read was right.</b> SpaceX IPO'd June 12 at $135, the lockup expires
+          tomorrow, and ~911.5M insider shares become sellable against a float under 280M.
+          The supply story is real.</p>
+          <p><b>You cannot short it here.</b> The account is <b>type: cash</b>, not margin.
+          There is no borrow, no locate, no path. A hard block, not a preference.</p>
+          <p>This paragraph exists to test the thing you actually complained about: small
+          body copy, several lines deep, read at arm's length on a big monitor. If your eye
+          slides off here, the theme has failed regardless of how good the numbers look.</p>
+        </div>
+        <div style="margin-top:14px;display:flex;gap:8px">
+          <button class="btn">Chart</button><button class="btn">Trade</button><button class="btn">Journal it</button>
+        </div>
+        <div class="meta">10-spcx-short-thesis.html &middot; research only, no order placed</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const btns=[...document.querySelectorAll('.lab button')];
+const set=t=>{document.documentElement.dataset.theme=t;
+  btns.forEach(b=>b.classList.toggle('on',b.dataset.t===t));};
+btns.forEach(b=>b.onclick=()=>set(b.dataset.t));
+addEventListener('keydown',e=>{
+  const i=btns.findIndex(b=>b.classList.contains('on'));
+  if(e.key==='ArrowRight')set(btns[(i+1)%btns.length].dataset.t);
+  if(e.key==='ArrowLeft')set(btns[(i-1+btns.length)%btns.length].dataset.t);
+});
+</script>
+</body>
+</html>

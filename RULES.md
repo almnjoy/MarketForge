@@ -1,8 +1,8 @@
 # Training-Wheels Rules (live money, minimal auto)
 
-The bot on rocker auto-trades REAL money inside these caps while Dustin researches
+The bot auto-trades REAL money inside these caps while Dustin researches
 strategy. This doc is the discussion copy - the live values render on the left from
-the bot itself. To change: edit `/opt/docker/stock-bot/.env` on rocker + RECREATE the
+the bot itself. To change: edit `bot/.env` + RESTART the
 container (env bakes at creation; a restart is not enough).
 
 ## Auto-entry gates (all must pass, fail-closed)
@@ -32,7 +32,7 @@ container (env bakes at creation; a restart is not enough).
 - Trade ticket defaults trail 10%. Type "live" to arm. No naked entries.
 - The paper account still exists (trades-paper.db) for testing ideas risk-free.
 
-## Tuning backlog (discuss with CC, then apply on rocker)
+## Tuning backlog (discuss with the copilot, then apply in bot/.env)
 - Trail width per volatility class (10% is one-size; ATR-based would be better)
 - Time-of-day filter (skip the 4pm scan's late entries?)
 - Reddit-buzz as a score booster vs its own lane

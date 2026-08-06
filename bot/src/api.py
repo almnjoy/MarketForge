@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 import time
 import urllib.request
 import uuid
@@ -22,6 +23,139 @@ from alpaca_client import AlpacaClient, cents_to_dollars
 from sectors import sector_for
 
 app = Flask(__name__)
+
+# ---------------------------------------------------------------------------
+# EXIT GUARANTEE
+#
+# The product promise is "every entry carries an exit the moment it fills".
+# It had a hole: the order path polled for a fill 6 times over 18 seconds and,
+# if the fill had not landed yet, gave up and armed nothing. A slow fill meant a
+# permanently naked position, and nothing ever came back to fix it. That is what
+# happened to VRM on 2026-08-06 - filled, held overnight, no stop.
+#
+# Three layers now:
+#   1. inline poll (fast path, unchanged)
+#   2. a durable watcher that keeps checking for hours and arms the stop late
+#   3. a startup + periodic sweep that finds ANY unprotected position
+# The queue is on disk, so restarting the bot does not lose a pending exit.
+# ---------------------------------------------------------------------------
+PROTECT_FILE = config.DATA_DIR / "pending-protect.json"
+_protect_lock = threading.Lock()
+
+
+def _protect_load():
+    try:
+        return json.loads(PROTECT_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _protect_save(rows):
+    try:
+        PROTECT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PROTECT_FILE.write_text(json.dumps(rows, indent=1), encoding="utf-8")
+    except Exception as e:
+        print(f"[protect] could not persist queue: {e}")
+
+
+def _protect_queue_add(order_id, symbol, trail_pct):
+    if not order_id:
+        return
+    with _protect_lock:
+        rows = [r for r in _protect_load() if r.get("order_id") != order_id]
+        rows.append({"order_id": order_id, "symbol": symbol,
+                     "trail_pct": float(trail_pct), "added": time.time()})
+        _protect_save(rows)
+    print(f"[protect] queued {symbol} order {order_id} for a {trail_pct}% trail")
+
+
+def _open_sell_orders(client):
+    """Symbols that already have a live sell order (any kind) working."""
+    try:
+        raw = client._req("GET", client.trade_base, "/v2/orders",
+                          params={"status": "open", "limit": 100})
+    except Exception:
+        return set()
+    return {o.get("symbol") for o in (raw or []) if str(o.get("side")) == "sell"}
+
+
+def unprotected_positions(client):
+    """Open long positions with NO working sell order. This is the check that
+    would have caught VRM the same evening instead of the next morning."""
+    try:
+        pos = client.list_positions() or []
+    except Exception:
+        return []
+    guarded = _open_sell_orders(client)
+    out = []
+    for p in pos:
+        sym = p.get("symbol")
+        if sym and sym not in guarded and float(p.get("qty") or 0) > 0:
+            out.append({"symbol": sym, "qty": p.get("qty"),
+                        "avg_entry": p.get("avg_entry_price"),
+                        "price": p.get("current_price"),
+                        "unrealized_pl": p.get("unrealized_pl")})
+    return out
+
+
+def arm_trail(client, symbol, trail_pct, qty=None):
+    """Arm a GTC trailing stop on an EXISTING position. Idempotent-ish: refuses
+    if that symbol already has a working sell order, so it cannot double-sell."""
+    if symbol in _open_sell_orders(client):
+        return {"ok": False, "error": f"{symbol} already has a working sell order"}
+    pos = {p.get("symbol"): p for p in (client.list_positions() or [])}
+    p = pos.get(symbol)
+    if not p:
+        return {"ok": False, "error": f"no open position in {symbol}"}
+    q = int(float(qty or p.get("qty") or 0))
+    if q < 1:
+        return {"ok": False, "error": "trailing stops need at least 1 whole share"}
+    t = client.submit_trailing_stop_sell(symbol=symbol, qty=q, trail_percent=float(trail_pct))
+    return {"ok": True, "symbol": symbol, "qty": q,
+            "trail_percent": float(trail_pct), "id": t.get("id")}
+
+
+def _protect_worker():
+    """Arms pending exits late, then sweeps for anything naked."""
+    while True:
+        try:
+            client = AlpacaClient()
+            with _protect_lock:
+                rows = _protect_load()
+            keep = []
+            for r in rows:
+                age = time.time() - float(r.get("added", 0))
+                try:
+                    o = client.get_order(r["order_id"])
+                    st = str(o.get("status"))
+                    if st == "filled":
+                        q = int(float(o.get("filled_qty") or 0))
+                        if q >= 1:
+                            res = arm_trail(client, r["symbol"], r["trail_pct"], q)
+                            print(f"[protect] late-armed {r['symbol']}: {res}")
+                        continue                      # done either way
+                    if st in ("canceled", "expired", "rejected", "suspended"):
+                        print(f"[protect] {r['symbol']} order {st}; dropping")
+                        continue
+                except Exception as e:
+                    print(f"[protect] check failed for {r.get('symbol')}: {e}")
+                if age < 6 * 3600:                    # give up after 6h, not 18s
+                    keep.append(r)
+                else:
+                    print(f"[protect] giving up on {r.get('symbol')} after 6h")
+            with _protect_lock:
+                if keep != rows:
+                    _protect_save(keep)
+
+            for u in unprotected_positions(client):
+                print(f"[protect] !! UNPROTECTED POSITION: {u['symbol']} qty {u['qty']} "
+                      f"@ {u['avg_entry']} - no working sell order")
+        except Exception as e:
+            print(f"[protect] worker error: {e}")
+        time.sleep(30)
+
+
+threading.Thread(target=_protect_worker, daemon=True).start()
 
 
 @app.after_request
@@ -225,7 +359,7 @@ def api_order():
         trail = None
         if exit_trail is not None and side == "buy":
             filled_qty = 0
-            for _ in range(6):  # market orders in RTH fill in seconds
+            for _ in range(6):  # market orders in RTH usually fill in seconds
                 time.sleep(3)
                 o = client.get_order(resp.get("id"))
                 if o.get("status") == "filled":
@@ -237,11 +371,48 @@ def api_order():
                 trail = {"armed": True, "qty": filled_qty, "trail_percent": exit_trail,
                          "id": t.get("id")}
             else:
-                trail = {"armed": False,
-                         "error": "fill unconfirmed after 18s - set the stop manually"}
+                # DO NOT give up here. This used to return "set the stop manually"
+                # and forget, which left VRM (2026-08-06) naked overnight on a slow
+                # fill. Hand it to the watcher, which keeps polling for hours and
+                # arms the stop the moment the fill lands.
+                _protect_queue_add(resp.get("id"), symbol, exit_trail)
+                trail = {"armed": False, "pending": True,
+                         "error": "fill not confirmed in 18s - watcher will arm the "
+                                  "trail as soon as it fills"}
         return jsonify({"ok": True, "symbol": symbol, "side": side, "notional": notional,
                         "qty": qty, "status": resp.get("status"), "id": resp.get("id"),
                         "trail": trail})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:300]}), 502
+
+
+@app.route("/api/unprotected", methods=["GET"])
+def api_unprotected():
+    """Open positions with no working sell order. The dashboard shows this as a
+    banner - a naked position should be impossible to miss."""
+    try:
+        return jsonify({"positions": unprotected_positions(AlpacaClient())})
+    except Exception as e:
+        return jsonify({"positions": [], "error": str(e)[:200]}), 502
+
+
+@app.route("/api/protect", methods=["POST"])
+def api_protect():
+    """Arm a trailing stop on an EXISTING position. This is the endpoint that did
+    not exist when VRM needed one - the only way to attach an exit used to be as
+    part of a fresh buy."""
+    body = request.get_json(silent=True) or {}
+    symbol = str(body.get("symbol", "")).upper().strip()
+    if not symbol:
+        return jsonify({"ok": False, "error": "symbol required"}), 400
+    try:
+        trail = float(body.get("trail_pct") or config.RADAR_AUTO_TRAIL_PCT * 100)
+        assert 0.5 <= trail <= 50
+    except Exception:
+        return jsonify({"ok": False, "error": "trail_pct must be 0.5-50 (percent)"}), 400
+    try:
+        res = arm_trail(AlpacaClient(), symbol, trail, body.get("qty"))
+        return jsonify(res), (200 if res.get("ok") else 400)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:300]}), 502
 

@@ -5,9 +5,19 @@
    to brand blue/orange. Tweak freely. */
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Inter:wght@400;500;600;700&display=swap');
 
-:root {
-  --bg: #0b0f16; --panel: #141a24; --panel2: #1a2230; --border: #243040;
-  --fg: #eef2f8; --dim: #9aa8bb;
+/* ---------- THEMES ----------
+   One markup tree, N skins, switched by [data-theme] on <html> (the style-engine
+   mechanism from Websites/Design-Style-Explorations). The picker lives in the top
+   bar, the choice persists in localStorage, and config.json `theme` sets the
+   default for a fresh install. Add a theme = add a block here + a line in
+   THEMES in app.js. Nothing else in this file may hard-code a color. */
+:root, [data-theme="forge"] {
+  /* forge, contrast-tuned 2026-08-05: surfaces were blue-tinted, which put body
+     copy at ~6:1 against them. Pushed toward true black, lifted --dim, and
+     dropped the grid to a whisper so it stops competing with text. */
+  --bg: #0a0d13; --panel: #121722; --panel2: #0e131c; --border: #232c3d;
+  --fg: #eef3fa; --dim: #a3b1c6; --faint: #61708a;
+  --grid: rgba(46,60,84,.16); --grid-size: 64px;
   --primary: #4f9dff;          /* structure / brand blue (chrome, links, signal) */
   --accent: #ff6a00;           /* heat orange (kickers, CTAs, live badge) */
   /* P&L is CONVENTIONAL green/red (Dustin 2026-08-05: blue/orange % were hard
@@ -20,14 +30,58 @@
   --serif: 'Fraunces', Georgia, serif;
   --sans: 'Inter', 'Segoe UI', system-ui, sans-serif;
   --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  --display: var(--serif); --kicker-style: italic; --kicker-ls: .08em;
+}
+/* vault - the Kalshi read: near-black, no backdrop, one accent, numbers get the
+   size budget instead of the chrome. dark / grotesk / cool-green. */
+[data-theme="vault"] {
+  --bg: #08090c; --panel: #101318; --panel2: #0c0e12; --border: #1e232c;
+  --fg: #ffffff; --dim: #9aa3b2; --faint: #6b7280;
+  --grid: transparent; --grid-size: 64px;
+  --primary: #00d68f; --accent: #00d68f;
+  --gain: #00d68f; --gain2: #00b377; --loss: #ff5c5c; --loss2: #e04343;
+  --success: #00d68f; --danger: #ff5c5c; --warn: #ffc043;
+  --radius: 12px; --radius-s: 9px;
+  --serif: 'Inter', system-ui, sans-serif;
+  --sans: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  --display: var(--sans); --kicker-style: normal; --kicker-ls: .14em;
+}
+/* tape - trading desk terminal. dark / mono / amber. */
+[data-theme="tape"] {
+  --bg: #000000; --panel: #0b0b0b; --panel2: #070707; --border: #242018;
+  --fg: #ffd9a0; --dim: #b08d5c; --faint: #7a6034;
+  --grid: transparent; --grid-size: 64px;
+  --primary: #ffb000; --accent: #ffb000;
+  --gain: #4ce660; --gain2: #38c94a; --loss: #ff4d4d; --loss2: #e03a3a;
+  --success: #4ce660; --danger: #ff4d4d; --warn: #ffb000;
+  --radius: 3px; --radius-s: 2px;
+  --serif: "JetBrains Mono", Consolas, monospace;
+  --sans: "JetBrains Mono", Consolas, monospace;
+  --mono: "JetBrains Mono", Consolas, monospace;
+  --display: var(--mono); --kicker-style: normal; --kicker-ls: .06em;
+}
+/* broadsheet - daylight mode. light / serif-headline / warm. */
+[data-theme="broadsheet"] {
+  --bg: #f7f5f0; --panel: #ffffff; --panel2: #faf8f4; --border: #ddd6c9;
+  --fg: #14181f; --dim: #4d5766; --faint: #8b94a3;
+  --grid: rgba(0,0,0,.035); --grid-size: 32px;
+  --primary: #1d5fb8; --accent: #c9500d;
+  --gain: #0f7b52; --gain2: #0b5c3d; --loss: #c0342b; --loss2: #96271f;
+  --success: #0f7b52; --danger: #c0342b; --warn: #a35d00;
+  --radius: 10px; --radius-s: 7px;
+  --serif: 'Fraunces', Georgia, serif;
+  --sans: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  --display: var(--serif); --kicker-style: normal; --kicker-ls: .1em;
 }
 * { box-sizing: border-box; }
 body {
   margin: 0; background-color: var(--bg); color: var(--fg);
-  font: 15px/1.55 var(--sans);
+  font: 15px/1.6 var(--sans);
   background-image:
-    repeating-linear-gradient(0deg, rgba(36,48,64,.35) 0, rgba(36,48,64,.35) 1px, transparent 1px, transparent 64px),
-    repeating-linear-gradient(90deg, rgba(36,48,64,.35) 0, rgba(36,48,64,.35) 1px, transparent 1px, transparent 64px);
+    repeating-linear-gradient(0deg, var(--grid) 0 1px, transparent 1px var(--grid-size)),
+    repeating-linear-gradient(90deg, var(--grid) 0 1px, transparent 1px var(--grid-size));
   background-attachment: fixed;
 }
 .mono { font-family: var(--mono); }
@@ -180,13 +234,135 @@ td.r, th.r { text-align: right; }
   resize: both; transition: border-color .2s ease; }
 .wb-card:hover { border-color: rgba(79,157,255,.4); }
 .wb-card.wide { flex: 1 1 880px; }
-.wb-card.full { flex: 1 1 100%; height: 560px; }
-.wb-card.tall { height: 680px; }
-.wb-card .wb-t { font-family: var(--serif); font-style: italic; font-size: .78rem; letter-spacing: .06em;
+/* Heights are viewport-relative now. A fixed 560px "full" card meant a long board
+   scrolled inside a letterbox on a 1440p monitor while most of the screen sat empty. */
+.wb-card.full { flex: 1 1 100%; height: 76vh; }
+.wb-card.tall { height: 82vh; }
+/* size: page - a real document surface. Use for full-page reviews and deep dives. */
+.wb-card.page { flex: 1 1 100%; height: calc(100vh - 168px); min-height: 560px; }
+.wb-card .wb-t { font-family: var(--display, var(--serif)); font-style: var(--kicker-style, italic);
+  font-size: .78rem; letter-spacing: var(--kicker-ls, .06em);
   text-transform: uppercase; color: var(--accent); padding: 8px 12px; border-bottom: 1px solid var(--border);
-  display: flex; flex-shrink: 0; }
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .wb-card .wb-t::before { content: '// '; }
 .wb-card iframe { width: 100%; border: 0; background: var(--panel); flex: 1; min-height: 0; }
+/* ---------- admin sub-nav ---------- */
+#subtabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 16px;
+  border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+#subtabs button { background: transparent; border: 1px solid transparent; color: var(--dim);
+  border-radius: 99px; padding: 6px 15px; font: 500 13px var(--sans); cursor: pointer; }
+#subtabs button:hover { color: var(--fg); }
+#subtabs button.on { border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.subview { display: none; } .subview.on { display: block; }
+.themerow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+
+/* ---------- copilot: a conversation, not a form ----------
+   Centered reading column. Assistant messages are full-width and UNBOXED (the
+   two-sided bubble layout made every reply feel like a chat app notification);
+   only the user's own turns get a bubble. Composer is pinned at the bottom. */
+.chatwrap { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column;
+  height: calc(100vh - 172px); }
+.chathead { display: flex; align-items: center; gap: 10px; padding: 0 4px 10px; }
+.chatlog { flex: 1; overflow-y: auto; padding: 6px 4px 18px; background: transparent;
+  border: 0; border-radius: 0; margin: 0; scroll-behavior: smooth; }
+.turn { display: flex; gap: 13px; padding: 14px 0; }
+.turn .who { width: 27px; height: 27px; border-radius: 99px; flex-shrink: 0;
+  display: grid; place-items: center; font: 700 11px var(--sans); }
+.turn.assistant .who { background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+.turn.user .who { background: var(--panel2); color: var(--dim); border: 1px solid var(--border); }
+.turn .body { flex: 1; min-width: 0; font-size: 15.5px; line-height: 1.72;
+  white-space: pre-wrap; word-wrap: break-word; }
+.turn .stamp { font: 11px var(--mono); color: var(--faint, var(--dim)); margin-bottom: 4px; }
+/* the user's own turn reads as a quoted aside, not a competing wall of text */
+.turn.user .body { background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 14px; padding: 10px 15px; color: var(--dim); font-size: 15px; }
+.turn.assistant + .turn.user { border-top: 1px solid var(--border); margin-top: 6px; }
+
+.composer { padding: 10px 4px 4px; }
+.composer-box { display: flex; align-items: flex-end; gap: 8px; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 24px; padding: 8px 8px 8px 18px;
+  transition: border-color .15s ease; }
+.composer-box:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.composer-box textarea { flex: 1; background: transparent; border: 0; outline: 0; resize: none;
+  color: var(--fg); font: 15.5px/1.5 var(--sans); padding: 7px 0; max-height: 220px; }
+.composer-box textarea::placeholder { color: var(--faint, var(--dim)); }
+.composer-actions { display: flex; gap: 6px; align-items: center; }
+.cbtn { width: 36px; height: 36px; border-radius: 99px; border: 1px solid var(--border);
+  background: transparent; color: var(--dim); font-size: 15px; cursor: pointer;
+  display: grid; place-items: center; }
+.cbtn:hover { color: var(--fg); border-color: var(--accent); }
+.cbtn.send { background: var(--accent); color: #160a00; border-color: var(--accent);
+  font-weight: 700; }
+.cbtn.send:hover { filter: brightness(1.1); }
+.cbtn.rec { border-color: var(--loss); color: var(--loss); animation: pulse 1.2s infinite; }
+.composer-hint { text-align: center; color: var(--faint, var(--dim)); font-size: 11.5px;
+  padding: 8px 0 2px; }
+
+/* naked-position banner: an open position with no exit armed */
+.naked { border: 1px solid var(--loss2); border-left: 4px solid var(--loss2);
+  background: color-mix(in srgb, var(--loss2) 12%, transparent);
+  border-radius: var(--radius-s); padding: 13px 16px; margin-bottom: 14px; }
+.naked.hidden { display: none; }
+.naked h4 { margin: 0 0 6px; font: 700 14px var(--sans); color: var(--loss); }
+.naked .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 0; font: 13.5px var(--mono); }
+.naked .row + .row { border-top: 1px solid color-mix(in srgb, var(--loss2) 25%, transparent); }
+.naked .btn { border-color: var(--loss2); color: var(--loss); }
+.naked .btn:hover { background: color-mix(in srgb, var(--loss2) 18%, transparent); }
+
+/* LIVE tell: a real-money desk should never be mistaken for the paper one at a
+   glance. Rails down both edges, plus the tab title carries the account. */
+body.live-mode::before, body.live-mode::after {
+  content: ''; position: fixed; top: 0; bottom: 0; width: 3px; z-index: 100;
+  background: linear-gradient(180deg, var(--loss2), var(--accent));
+  pointer-events: none; opacity: .85;
+}
+body.live-mode::before { left: 0; } body.live-mode::after { right: 0; }
+
+/* ---------- interactive chart controls ---------- */
+.chart-ranges { display: inline-flex; gap: 4px; align-items: center; }
+.chart-ranges button { background: transparent; border: 1px solid var(--border); color: var(--dim);
+  border-radius: 7px; padding: 3px 9px; font: 500 11.5px var(--sans); cursor: pointer; }
+.chart-ranges button:hover { color: var(--fg); border-color: var(--accent); }
+.chart-ranges button.on { border-color: var(--primary); color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, transparent); }
+.chart-ranges .tgl { margin-left: 6px; }
+.chart-hover { min-height: 18px; font: 11.5px var(--mono); color: var(--faint, var(--dim));
+  padding: 2px 4px 4px; opacity: 0; transition: opacity .12s ease; }
+.chart-hover.on { opacity: 1; }
+#bigChart svg { cursor: crosshair; }
+
+/* usage bars: proportion at a glance, no chart library */
+.ubar { height: 4px; border-radius: 99px; background: var(--border); margin-top: 6px; overflow: hidden; }
+.ubar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+
+/* ---------- admin tables (read-only inventory) ---------- */
+table.admin { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+table.admin th { text-align: left; font: 500 10.5px var(--sans); letter-spacing: .11em;
+  text-transform: uppercase; color: var(--faint, var(--dim)); padding: 0 10px 8px 0;
+  border-bottom: 1px solid var(--border); }
+table.admin td { padding: 9px 10px 9px 0; border-bottom: 1px solid var(--border);
+  vertical-align: top; }
+table.admin td.r, table.admin th.r { text-align: right; }
+table.admin .faint { color: var(--faint, var(--dim)); font-size: 11.5px; }
+table.admin tr:last-child td { border-bottom: 0; }
+
+/* theme picker: looks like the other chips, not like a form control */
+.themepick { background: var(--panel2); color: var(--dim); border: 1px solid var(--border);
+  border-radius: 99px; padding: 5px 10px; font: 12px var(--sans); cursor: pointer; }
+.themepick:hover { border-color: var(--accent); color: var(--fg); }
+.themepick option { background: var(--panel); color: var(--fg); }
+
+.wb-max { background: transparent; border: 1px solid var(--border); color: var(--dim);
+  border-radius: 6px; font-size: 12px; line-height: 1; padding: 3px 7px; cursor: pointer; }
+.wb-max:hover { border-color: var(--accent); color: var(--accent); }
+/* maximized: the card leaves the flow and owns the screen */
+.wb-card.maximized { position: fixed; inset: 10px; z-index: 90; height: auto !important;
+  width: auto !important; max-width: none; flex: none !important; resize: none;
+  box-shadow: 0 40px 120px rgba(0,0,0,.7); }
+body.has-max { overflow: hidden; }
 
 /* ---------- rules / md ---------- */
 .md { font-size: 14.5px; font-family: var(--sans); }
@@ -221,14 +397,13 @@ td.r, th.r { text-align: right; }
 .btn.stop { border-color: rgba(239,68,68,.55); color: var(--loss); }
 .btn.stop:hover { background: rgba(239,68,68,.15); color: var(--loss2); border-color: var(--loss2); transform: none; }
 .btn.stop.hidden { display: none; }
-.msg.typing .stopmini { margin-left: 10px; cursor: pointer; color: var(--loss); font-style: normal; }
-.msg.typing .stopmini:hover { color: var(--loss2); }
+.turn.typing .stopmini { margin-left: 10px; cursor: pointer; color: var(--loss); font-style: normal; }
+.turn.typing .stopmini:hover { color: var(--loss2); }
 .chip.mkt { font-family: var(--serif); font-weight: 600; }
 .chip.mkt.open { color: var(--gain); border-color: rgba(74,222,128,.4); }
 .chip.mkt.pre { color: var(--warn); border-color: rgba(251,191,36,.4); }
-.msg.typing { opacity: .75; font-style: italic; }
-.msg.typing .dots::after { content: '...'; animation: pulse 1.2s infinite; }
-.chatrow input:focus { outline: none; border-color: var(--primary); }
+.turn.typing .body { opacity: .8; font-style: italic; }
+.turn.typing .dots::after { content: '...'; animation: pulse 1.2s infinite; }
 #micBtn.rec { border-color: var(--accent); color: var(--accent); animation: pulse 1s infinite; }
 .hint { margin-top: 8px; }
 

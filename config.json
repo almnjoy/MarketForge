@@ -1,6 +1,9 @@
 {
-  "bot_base": "http://10.20.20.100:8796",
+  "_comment": "bot_base is only used when NOT embedded. Rocker was retired 2026-08-06; everything runs locally now, so this points at the in-process engine.",
+  "bot_base": "http://127.0.0.1:8796",
   "port": 8410,
   "voicebox_url": "http://127.0.0.1:17493",
-  "voicebox_profile": "Adam"
+  "voicebox_profile": "Adam",
+  "bridge_model": "opus",
+  "bridge_timeout": 240
 }

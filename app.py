@@ -1,7 +1,7 @@
 """Agentic Stock Bot - LOCAL dashboard server.
 
 Pure Python stdlib (no pip installs, runs on any Python 3.9+). Serves the
-dashboard UI, proxies the rocker stock-bot API over the LAN, and exposes the
+dashboard UI, runs the bot engine in-process, and exposes the
 two file buses Claude Code drives:
 
   panels/*.html      -> every file renders as a live card on the WORKBENCH tab
@@ -9,7 +9,9 @@ two file buses Claude Code drives:
   chat-inbox.jsonl   -> what Dustin says in the COPILOT tab (voice or typed)
   chat-outbox.jsonl  -> what Claude Code answers; the tab renders + speaks it
 
-Run:  python app.py   (or run.bat)  ->  http://localhost:8410
+Run:  run-portable.bat -> :8410 (embedded engine, bot/.env)
+      run.bat          -> :8411 (second desk, e.g. a remote//hosted engine)
+      MF_PORT overrides either.
 Bot base URL + port live in config.json.
 """
 from __future__ import annotations
@@ -58,7 +60,7 @@ def _journal_log(kind, text):
     except Exception:
         pass
 
-_cfg = {"bot_base": "http://10.20.20.100:8796", "port": 8410,
+_cfg = {"bot_base": "http://127.0.0.1:8796", "port": 8410,
         "voicebox_url": "http://127.0.0.1:17493"}
 try:
     _cfg.update(json.loads((ROOT / "config.json").read_text(encoding="utf-8")))
@@ -66,12 +68,15 @@ except Exception:
     pass
 # EMBEDDED mode (the "friend edition"): MF_EMBEDDED=1 (or config "embedded": true)
 # makes this server spawn the bot engine from bot/run_bot.py and point itself at
-# it - one folder, one command, no rocker, no Docker.
+# it - one folder, one command, no server, no Docker.
 EMBEDDED = os.environ.get("MF_EMBEDDED", "").strip() == "1" or bool(_cfg.get("embedded"))
 if EMBEDDED:
     _cfg["bot_base"] = f"http://127.0.0.1:{int(_cfg.get('bot_port', 8796))}"
 BOT = str(_cfg["bot_base"]).rstrip("/")
-PORT = int(_cfg["port"])
+# Port: MF_PORT wins over config.json so the LIVE and PAPER desks can run side by
+# side on different ports. They used to share 8410, which meant whichever started
+# first owned the URL and the second silently served the wrong account.
+PORT = int(os.environ.get("MF_PORT") or _cfg["port"])
 
 
 def _bot_supervisor():
@@ -90,6 +95,25 @@ def _bot_supervisor():
 VOICEBOX = str(_cfg["voicebox_url"]).rstrip("/")
 _vb_profile = {"id": None}   # the app's default voice, resolved once from config
 _VB_ENGINE_OK = {}           # profile_id -> the engine field shape Voicebox accepted
+_STARTED_AT = time.time()    # process start, for the Admin tab's uptime
+USAGE = ROOT / "usage.jsonl"  # measured copilot spend, one line per bridge turn
+
+
+def _usage_log(ev: dict, model: str):
+    """Append one bridge turn's real usage. `ev` is a stream-json result event."""
+    u = ev.get("usage") or {}
+    row = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "lane": "bridge", "model": ev.get("model") or model,
+        "cost_usd": ev.get("total_cost_usd"),
+        "ms": ev.get("duration_ms"),
+        "in": u.get("input_tokens", 0), "out": u.get("output_tokens", 0),
+        "cache_w": u.get("cache_creation_input_tokens", 0),
+        "cache_r": u.get("cache_read_input_tokens", 0),
+    }
+    with _chat_lock:
+        with USAGE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row) + "\n")
 
 # ---- live copilot bridge -------------------------------------------------
 # New chat-inbox lines automatically get a headless `claude -p` turn (no more
@@ -222,6 +246,14 @@ def _bridge_turn(new_texts):
                         text_parts.append(blk["text"])
             elif et == "result":
                 result_text = ev.get("result")
+                # The result event carries REAL usage and cost for the turn, so the
+                # Admin tab reports measured spend rather than a token estimate.
+                # (The bridge runs --no-session-persistence, so these turns never
+                # appear in ~/.claude/projects - this file is the only record.)
+                try:
+                    _usage_log(ev, BRIDGE_MODEL)
+                except Exception:
+                    pass
         proc.wait(timeout=15)
     finally:
         killer.cancel()
@@ -273,7 +305,7 @@ _chat_lock = threading.Lock()
 # Only these bot GET paths are reachable through the proxy (mirror of what the
 # UI needs; keeps anything else on the bot unreachable from the browser).
 BOT_GET = {"status", "positions", "orders", "equity", "radar", "reddit",
-           "config", "log", "spark", "bars", "news"}
+           "config", "log", "spark", "bars", "news", "unprotected"}
 
 
 def _bot_get(path_qs: str, timeout=25):
@@ -364,10 +396,40 @@ def _vb_pick_profile(want=None):
     return pick["id"]
 
 
+def _usage_totals():
+    """Measured copilot spend from usage.jsonl, split by model and by day.
+
+    Cost is what the CLI itself reported for the turn. On a Max subscription
+    that number is the API-equivalent value of work you already paid a flat fee
+    for, not an incremental charge - which is exactly the "saved this month"
+    framing the OpsCanvas AI Usage page uses."""
+    rows = _read_jsonl(USAGE, 20000)
+    tot = {"turns": 0, "cost_usd": 0.0, "tokens_total": 0, "cached": 0,
+           "by_model": {}, "by_day": {}}
+    for r in rows:
+        t = (r.get("in", 0) or 0) + (r.get("out", 0) or 0) \
+            + (r.get("cache_w", 0) or 0) + (r.get("cache_r", 0) or 0)
+        c = float(r.get("cost_usd") or 0)
+        m, day = r.get("model", "?"), str(r.get("ts", ""))[:10]
+        tot["turns"] += 1
+        tot["cost_usd"] += c
+        tot["tokens_total"] += t
+        tot["cached"] += (r.get("cache_r", 0) or 0)
+        bm = tot["by_model"].setdefault(m, {"turns": 0, "cost_usd": 0.0, "tokens": 0})
+        bm["turns"] += 1; bm["cost_usd"] += c; bm["tokens"] += t
+        bd = tot["by_day"].setdefault(day, {"turns": 0, "cost_usd": 0.0, "tokens": 0})
+        bd["turns"] += 1; bd["cost_usd"] += c; bd["tokens"] += t
+    tot["cost_usd"] = round(tot["cost_usd"], 4)
+    for d in list(tot["by_model"].values()) + list(tot["by_day"].values()):
+        d["cost_usd"] = round(d["cost_usd"], 4)
+    return tot
+
+
 def _panels_state(root=None):
     """[{name, title, size, mtime}] sorted by filename. Title from a leading
-    <!-- title: X --> comment; size from <!-- size: full|wide|tall --> (layout
-    hint: full = whole row, wide = double width, tall = extra height)."""
+    <!-- title: X --> comment; size from <!-- size: page|full|wide|tall -->
+    (layout hint: page = a whole document surface for deep dives and full-page
+    reviews, full = whole row, wide = double width, tall = extra height)."""
     root = root or PANELS
     items = []
     if root.exists():
@@ -379,7 +441,7 @@ def _panels_state(root=None):
                     title = head.split("title:", 1)[1].split("-->", 1)[0].strip() or title
                 if "size:" in head:
                     cand = head.split("size:", 1)[1].split("-->", 1)[0].strip().lower()
-                    if cand in ("full", "wide", "tall"):
+                    if cand in ("page", "full", "wide", "tall"):
                         size = cand
             except Exception:
                 pass
@@ -505,7 +567,106 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/meta":
             return self._json({"bot_base": BOT, "port": PORT, "root": str(ROOT),
-                               "voicebox": VOICEBOX, "user": str(_cfg.get("user", "Dustin"))})
+                               "voicebox": VOICEBOX, "user": str(_cfg.get("user", "Dustin")),
+                               "theme": str(_cfg.get("theme", "forge"))})
+
+        if path == "/api/admin":
+            # READ-ONLY inventory: what is running, on which model, from which files.
+            # Deliberately cannot create or edit anything - this is a "show me what
+            # is in place" screen, not a control panel. Secrets are NEVER returned,
+            # only whether a file exists and how big it is.
+            def finfo(p, label, what):
+                try:
+                    st = p.stat()
+                    return {"label": label, "what": what, "path": str(p.relative_to(ROOT)),
+                            "exists": True, "bytes": st.st_size,
+                            "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))}
+                except OSError:
+                    return {"label": label, "what": what, "path": str(p.name),
+                            "exists": False, "bytes": 0, "mtime": ""}
+
+            bot_cfg = {}
+            try:
+                raw, code = _bot_get("config", timeout=6)
+                if code == 200:
+                    bot_cfg = json.loads(raw)
+            except Exception:
+                pass
+            ra = (bot_cfg.get("radar_auto") or {}) if isinstance(bot_cfg, dict) else {}
+
+            jrn = _read_jsonl(JOURNAL, 4000)
+            kinds = {}
+            for e in jrn:
+                kinds[e.get("kind", "?")] = kinds.get(e.get("kind", "?"), 0) + 1
+
+            lanes = [{
+                "name": "Bridge (in-app copilot)", "runtime": "claude -p, headless",
+                "model": BRIDGE_MODEL, "enabled": BRIDGE,
+                "status": _bridge.get("status"), "turns": _bridge.get("turns", 0),
+                "last_ms": _bridge.get("last_ms", 0), "timeout_s": BRIDGE_TIMEOUT,
+                "binary": _resolve_claude() or "not found on PATH",
+                "note": "One short turn per chat message. Builds panels, answers, speaks.",
+            }, {
+                "name": "Your terminal session", "runtime": "claude (interactive)",
+                "model": "whatever /model says in that window", "enabled": None,
+                "status": "external", "turns": None, "last_ms": None, "timeout_s": None,
+                "binary": "", "note": "The deep-work lane. Market Forge cannot see or set its model.",
+            }, {
+                "name": "Catalyst scoring", "runtime": "OpenAI-compatible endpoint",
+                "model": (bot_cfg.get("radar_llm_model") or "rules-only (no LLM)"),
+                "enabled": bool(bot_cfg.get("radar_use_llm")),
+                "status": "on" if bot_cfg.get("radar_use_llm") else "off",
+                "turns": None, "last_ms": None, "timeout_s": None,
+                "binary": str(bot_cfg.get("radar_llm_base") or ""),
+                "note": "Scores each mover 0-100 signal-vs-noise. Auto-entries need a score.",
+            }, {
+                "name": "Voice", "runtime": "Voicebox (local)",
+                "model": f'{_vb_profile.get("name") or _cfg.get("voicebox_profile") or "auto"}'
+                         f'{" / " + _vb_profile["engine"] if _vb_profile.get("engine") else ""}',
+                "enabled": True, "status": "ready" if _vb_profile.get("id") else "not probed",
+                "turns": None, "last_ms": None, "timeout_s": None, "binary": VOICEBOX,
+                "note": "Speech out. Falls back to the browser voice if Voicebox is down.",
+            }]
+
+            files = [
+                finfo(ROOT / "CLAUDE.md", "CLAUDE.md", "The copilot's brief and hard rules"),
+                finfo(RULES, "RULES.md", "Your written trading plan"),
+                finfo(MEMORY, "memory.md", "Standing orders injected into every turn"),
+                finfo(ROOT / "PROMPTS.md", "PROMPTS.md", "Prompts that reliably work"),
+                finfo(ROOT / "config.json", "config.json", "Ports, model, theme, Voicebox"),
+                finfo(ROOT / "bot" / ".env", "bot/.env", "Your keys. Never displayed, never committed."),
+                finfo(JOURNAL, "journal.jsonl", "Every scan, chat, order and board"),
+                finfo(INBOX, "chat-inbox.jsonl", "What you said"),
+                finfo(OUTBOX, "chat-outbox.jsonl", "What the copilot said"),
+            ]
+
+            return self._json({
+                "runtime": {
+                    "python": sys.version.split()[0], "platform": sys.platform,
+                    "embedded": EMBEDDED, "port": PORT, "root": str(ROOT),
+                    "bot_base": BOT,
+                    "started": time.strftime("%Y-%m-%d %H:%M", time.localtime(_STARTED_AT)),
+                    "uptime_s": int(time.time() - _STARTED_AT),
+                },
+                "lanes": lanes,
+                "files": files,
+                "counts": {
+                    "panels": len(_panels_state()),
+                    "boards": len([d for d in (ROOT / "saved-workbenches").glob("*") if d.is_dir()])
+                              if (ROOT / "saved-workbenches").exists() else 0,
+                    "journal": len(jrn), "journal_kinds": kinds,
+                    "chat": len(_read_jsonl(INBOX, 4000)) + len(_read_jsonl(OUTBOX, 4000)),
+                },
+                "trading": {
+                    "env": bot_cfg.get("env"), "auto": bool(ra.get("execute")),
+                    "live_auto": bool(ra.get("live_enabled")),
+                    "per_trade_cents": ra.get("notional_cents"),
+                    "max_per_day": ra.get("max_per_day"), "min_score": ra.get("min_score"),
+                    "feed": bot_cfg.get("data_feed"), "mode": bot_cfg.get("mode"),
+                },
+                "usage": _usage_totals(),
+                "recent": jrn[-40:][::-1],
+            })
 
         if path == "/api/memory":
             txt = MEMORY.read_text(encoding="utf-8", errors="replace") if MEMORY.exists() else ""
@@ -657,12 +818,15 @@ class Handler(BaseHTTPRequestHandler):
                 pid = _vb_pick_profile(body.get("profile_id"))
                 if not pid:
                     return self._json({"error": "no voice profile in Voicebox"}, 502)
-                # Cloned voices 400 if you name an engine they don't own, and the
-                # presets 400 if you omit it. Rather than hard-code which is which,
-                # try the most likely shape first and fall back. The winner is
-                # cached per profile so it only ever costs one extra call.
+                # Voicebox engines: qwen | qwen_custom_voice | luxtts | chatterbox |
+                # chatterbox_turbo | tada | kokoro  (per its /openapi.json, default
+                # "qwen"). A PRESET profile carries its own engine in preset_engine.
+                # A CLONED profile carries none at all, and kokoro is preset-voices-
+                # only, so naming kokoro on a clone is a guaranteed 400 - clones need
+                # a cloning engine, "qwen" (Qwen3-TTS) being the default.
                 known = _vb_profile.get("engine")
-                shapes = [None, "kokoro"] if _vb_profile.get("is_clone") else [known or "kokoro", None]
+                shapes = ([known or "qwen", None, "chatterbox"] if _vb_profile.get("is_clone")
+                          else [known or "kokoro", None])
                 if known and known not in shapes:
                     shapes.insert(0, known)
                 # None is a valid shape (omit the field), so probe with a sentinel.
@@ -718,6 +882,24 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"ok": False, "error": f"bot unreachable: {str(e)[:120]}"}, 502)
 
+        if parsed.path == "/api/bot/protect":
+            # arm a trailing stop on an EXISTING position (the VRM fix)
+            try:
+                raw, code = _bot_post("protect", body, timeout=30)
+                try:
+                    r = json.loads(raw)
+                    _journal_log("order", (f"PROTECT {r.get('symbol')} x{r.get('qty')} "
+                                           f"trail {r.get('trail_percent')}% armed")
+                                 if r.get("ok") else
+                                 f"PROTECT FAILED {body.get('symbol')}: {str(r.get('error'))[:120]}")
+                except Exception:
+                    pass
+                return self._raw(raw, "application/json", code)
+            except urllib.error.HTTPError as e:
+                return self._raw(e.read(), "application/json", e.code)
+            except Exception as e:
+                return self._json({"ok": False, "error": f"bot unreachable: {str(e)[:120]}"}, 502)
+
         if parsed.path == "/api/bot/run/radar":
             try:
                 raw, code = _bot_post("run/radar", {}, timeout=90)
@@ -739,8 +921,18 @@ def main():
     for p in (INBOX, OUTBOX):
         if not p.exists():
             p.write_text("", encoding="utf-8")
-    srv = Server(("127.0.0.1", PORT), Handler)
-    print(f"MARKET FORGE  ->  http://localhost:{PORT}")
+    # Fail LOUDLY on a busy port. Silently landing on someone else's server is how
+    # you end up staring at a paper account you thought was live.
+    try:
+        srv = Server(("127.0.0.1", PORT), Handler)
+    except OSError as e:
+        print(f"\n  !! Port {PORT} is already in use ({e.__class__.__name__}).")
+        print(f"  !! Something is ALREADY serving http://localhost:{PORT} - probably the other")
+        print("  !! Market Forge window. Close it, or set a different port:")
+        print(f"  !!     set MF_PORT=8412  &&  python app.py\n")
+        raise SystemExit(2)
+    lane = "remote engine" if not EMBEDDED else "embedded engine"
+    print(f"MARKET FORGE [{lane}]  ->  http://localhost:{PORT}")
     if EMBEDDED:
         threading.Thread(target=_bot_supervisor, daemon=True).start()
         print(f"  bot API: {BOT}  (EMBEDDED - engine runs in this process tree)")
