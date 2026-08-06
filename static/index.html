@@ -37,6 +37,7 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
   <button data-tab="radar">CATALYST_RADAR</button>
   <button data-tab="retail">RETAIL_RADAR</button>
   <button data-tab="workbench">WORKBENCH</button>
+  <button data-tab="saved">SAVED</button>
   <button data-tab="journal">JOURNAL</button>
   <button data-tab="copilot">COPILOT</button>
   <button data-tab="admin">ADMIN</button>
@@ -105,6 +106,32 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
     </div>
     <div id="workbench" class="wb-grid"></div>
   </section>
+
+  <!-- SAVED: every saved page as a clickable tile. Opening one READS it in an
+       overlay - it does not disturb the live workbench. -->
+  <section id="view-saved" class="view">
+    <div class="wb-bar">
+      <span class="dim">Saved pages. Click a tile to read it. <span id="svCount"></span></span>
+      <span class="right"></span>
+      <label class="dim" style="font-size:11px;display:flex;align-items:center;gap:5px">
+        <input type="checkbox" id="svShowAuto"> show autosaves
+      </label>
+      <button id="svRefresh" class="btn sm">Refresh</button>
+    </div>
+    <div id="savedGrid" class="sv-grid"></div>
+  </section>
+
+  <!-- full-screen reader for a saved page -->
+  <div id="svReader" class="sv-reader">
+    <div class="sv-reader-bar">
+      <span id="svReaderTitle" class="sv-reader-title"></span>
+      <span class="right"></span>
+      <span id="svReaderMeta" class="dim" style="font-size:11px"></span>
+      <button id="svReaderLoad" class="btn sm" title="Copy this page onto the live workbench">Load to workbench</button>
+      <button id="svReaderClose" class="btn sm">✕ Close</button>
+    </div>
+    <div id="svReaderBody" class="sv-reader-body"></div>
+  </div>
 
   <!-- RULES: live bot knobs + the training-wheels doc -->
 
@@ -204,6 +231,11 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
   <!-- COPILOT: a conversation surface, not a form. Centered reading column,
        assistant messages full-width and unboxed, composer pinned at the bottom. -->
   <section id="view-copilot" class="view">
+    <div class="chatlayout">
+    <aside id="chatSide" class="chatside">
+      <button id="chatNew" class="btn sm" title="Conversations are grouped by day; today is your current chat">+ Today</button>
+      <div id="chatDays"></div>
+    </aside>
     <div class="chatwrap">
       <div class="chathead">
         <span id="bridgeChip" class="chip">bridge: ...</span>
@@ -221,6 +253,7 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
         </div>
         <div class="composer-hint">Enter to send · Shift+Enter for a new line · it builds on the Workbench while you talk</div>
       </div>
+    </div>
     </div>
   </section>
 </main>

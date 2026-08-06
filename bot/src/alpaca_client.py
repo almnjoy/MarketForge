@@ -196,6 +196,25 @@ class AlpacaClient:
                 "client_order_id": client_order_id or f"radar-trail-{uuid.uuid4().hex[:10]}"}
         return self._req("POST", self.trade_base, "/v2/orders", json=body)
 
+    def submit_trailing_stop_buy(self, *, symbol, qty, trail_percent,
+                                 client_order_id=None) -> dict:
+        """GTC trailing stop BUY: the exit for a SHORT position.
+
+        Mirror of submit_trailing_stop_sell. The stop follows the position's
+        LOW-water mark and fires trail_percent ABOVE it, triggering a market buy
+        to cover. Whole shares only.
+
+        This exists because arm_trail() used to send a SELL for every position.
+        On a short that does not close anything - it doubles the short. Requires
+        a margin account with >= $2,000 equity; on a cash account the broker
+        rejects the underlying short before this is ever reached.
+        """
+        body = {"symbol": symbol, "side": "buy", "type": "trailing_stop",
+                "time_in_force": "gtc", "qty": str(int(qty)),
+                "trail_percent": f"{float(trail_percent):.2f}",
+                "client_order_id": client_order_id or f"cover-trail-{uuid.uuid4().hex[:10]}"}
+        return self._req("POST", self.trade_base, "/v2/orders", json=body)
+
     def submit_bracket_order(self, *, symbol, qty, take_profit_cents,
                              stop_loss_cents, client_order_id=None) -> dict:
         """Whole-share market BUY with its exits attached (OCO legs): take-profit

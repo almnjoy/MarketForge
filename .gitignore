@@ -20,3 +20,9 @@ demo/audio/
 
 # Claude Code per-machine tool allowlist - private, machine-specific
 .claude/settings.local.json
+
+# live snapshot - regenerated every 20s, machine-specific
+state.json
+
+# TradingView captures - personal, regenerated on demand
+tv-shots/

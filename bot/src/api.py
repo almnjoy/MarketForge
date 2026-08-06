@@ -7,7 +7,11 @@ duplicated logic. LAN/VPN-only; set API_TOKEN in .env to require a bearer token.
 from __future__ import annotations
 
 import json
+import os
+import pathlib
+import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -18,6 +22,7 @@ from flask import Flask, jsonify, request
 import config
 import db
 import portfolio
+import regime
 import risk
 from alpaca_client import AlpacaClient, cents_to_dollars
 from sectors import sector_for
@@ -69,49 +74,115 @@ def _protect_queue_add(order_id, symbol, trail_pct):
     print(f"[protect] queued {symbol} order {order_id} for a {trail_pct}% trail")
 
 
-def _open_sell_orders(client):
-    """Symbols that already have a live sell order (any kind) working."""
+def _exit_side(qty):
+    """The order side that CLOSES a position of this qty.
+
+    Alpaca reports a short as NEGATIVE qty. A long is closed by selling; a short
+    is closed by buying. Getting this backwards does not fail loudly - it doubles
+    the position. That is why it is one function used everywhere.
+    """
+    return "sell" if float(qty or 0) > 0 else "buy"
+
+
+def _working_exit_orders(client):
+    """{symbol: set_of_working_order_sides} for every live order.
+
+    Was _open_sell_orders(), which only knew about sells. A short position is
+    guarded by a working BUY, so a sell-only view reported every short as
+    unprotected forever - or worse, let arm_trail() fire a second sell.
+    """
     try:
         raw = client._req("GET", client.trade_base, "/v2/orders",
                           params={"status": "open", "limit": 100})
     except Exception:
-        return set()
-    return {o.get("symbol") for o in (raw or []) if str(o.get("side")) == "sell"}
+        # Fail CLOSED: an empty map means "nothing is known to be guarded", so
+        # positions get reported as unprotected rather than silently cleared.
+        return {}
+    out = {}
+    for o in (raw or []):
+        sym, side = o.get("symbol"), str(o.get("side"))
+        if sym:
+            out.setdefault(sym, set()).add(side)
+    return out
+
+
+def _open_sell_orders(client):
+    """Back-compat shim: symbols with a working SELL. Prefer _working_exit_orders."""
+    return {s for s, sides in _working_exit_orders(client).items() if "sell" in sides}
 
 
 def unprotected_positions(client):
-    """Open long positions with NO working sell order. This is the check that
-    would have caught VRM the same evening instead of the next morning."""
+    """Open positions with NO working order that would CLOSE them.
+
+    This is the check that would have caught VRM the same evening instead of the
+    next morning. It now covers shorts too: before, the `qty > 0` filter meant a
+    short position was invisible here, which is strictly worse than the VRM bug
+    because a short's downside has no floor.
+    """
     try:
         pos = client.list_positions() or []
     except Exception:
         return []
-    guarded = _open_sell_orders(client)
+    guarded = _working_exit_orders(client)
     out = []
     for p in pos:
         sym = p.get("symbol")
-        if sym and sym not in guarded and float(p.get("qty") or 0) > 0:
-            out.append({"symbol": sym, "qty": p.get("qty"),
-                        "avg_entry": p.get("avg_entry_price"),
-                        "price": p.get("current_price"),
-                        "unrealized_pl": p.get("unrealized_pl")})
+        qty = float(p.get("qty") or 0)
+        if not sym or qty == 0:
+            continue
+        need = _exit_side(qty)
+        if need in guarded.get(sym, ()):
+            continue
+        # list_positions() returns *_cents keys. The old code read
+        # "avg_entry_price"/"current_price"/"unrealized_pl", which do not exist
+        # on that dict, so the banner rendered blank prices on the one screen
+        # that must never be ambiguous.
+        out.append({
+            "symbol": sym,
+            "qty": qty,
+            "side": "long" if qty > 0 else "short",
+            "needs": need,
+            "avg_entry": cents_to_dollars(p.get("avg_entry_cents")),
+            "price": cents_to_dollars(p.get("current_price_cents")),
+            "unrealized_pl": cents_to_dollars(p.get("unrealized_pl_cents")),
+        })
     return out
 
 
 def arm_trail(client, symbol, trail_pct, qty=None):
-    """Arm a GTC trailing stop on an EXISTING position. Idempotent-ish: refuses
-    if that symbol already has a working sell order, so it cannot double-sell."""
-    if symbol in _open_sell_orders(client):
-        return {"ok": False, "error": f"{symbol} already has a working sell order"}
+    """Arm a GTC trailing stop on an EXISTING position, on the correct side.
+
+    Long  -> trailing stop SELL (rides up, fires below the high-water mark)
+    Short -> trailing stop BUY  (rides down, fires above the low-water mark)
+
+    Refuses if a closing order is already working, so it cannot double up.
+    """
     pos = {p.get("symbol"): p for p in (client.list_positions() or [])}
     p = pos.get(symbol)
     if not p:
         return {"ok": False, "error": f"no open position in {symbol}"}
-    q = int(float(qty or p.get("qty") or 0))
+
+    raw_qty = float(p.get("qty") or 0)
+    if raw_qty == 0:
+        return {"ok": False, "error": f"{symbol} position is flat"}
+    side = _exit_side(raw_qty)
+
+    working = _working_exit_orders(client).get(symbol, set())
+    if side in working:
+        return {"ok": False, "error": f"{symbol} already has a working {side} order"}
+
+    q = abs(int(float(qty if qty is not None else raw_qty)))
     if q < 1:
         return {"ok": False, "error": "trailing stops need at least 1 whole share"}
-    t = client.submit_trailing_stop_sell(symbol=symbol, qty=q, trail_percent=float(trail_pct))
-    return {"ok": True, "symbol": symbol, "qty": q,
+
+    if side == "sell":
+        t = client.submit_trailing_stop_sell(symbol=symbol, qty=q,
+                                             trail_percent=float(trail_pct))
+    else:
+        t = client.submit_trailing_stop_buy(symbol=symbol, qty=q,
+                                            trail_percent=float(trail_pct))
+    return {"ok": True, "symbol": symbol, "qty": q, "side": side,
+            "position": "long" if raw_qty > 0 else "short",
             "trail_percent": float(trail_pct), "id": t.get("id")}
 
 
@@ -386,6 +457,41 @@ def api_order():
         return jsonify({"ok": False, "error": str(e)[:300]}), 502
 
 
+@app.route("/api/broker/orders", methods=["GET"])
+def api_broker_orders():
+    """Live orders straight from the broker. READ-ONLY.
+
+    /api/orders reads the local sqlite ledger, which never records broker-side
+    stops - so it reported an empty list while Alpaca had a working trailing
+    stop sitting there. That blind spot is why a naked position was hard to
+    confirm. This is the same call _open_sell_orders() already makes, exposed
+    so the UI can show the actual trail width instead of 'there is a sell
+    order somewhere, trust me'.
+
+    ?status=open (default) | closed | all
+    """
+    status = str(request.args.get("status", "open")).lower()
+    if status not in ("open", "closed", "all"):
+        status = "open"
+    try:
+        c = AlpacaClient()
+        raw = c._req("GET", c.trade_base, "/v2/orders",
+                     params={"status": status, "limit": 100, "nested": "true"})
+        return jsonify([{
+            "symbol": o.get("symbol"), "side": o.get("side"),
+            "type": o.get("order_type"), "qty": o.get("qty"),
+            "filled_qty": o.get("filled_qty"),
+            "trail_percent": o.get("trail_percent"),
+            "stop_price": o.get("stop_price"),
+            "limit_price": o.get("limit_price"),
+            "status": o.get("status"),
+            "submitted_at": o.get("submitted_at"),
+            "id": o.get("id"),
+        } for o in (raw or [])])
+    except Exception as e:
+        return jsonify({"error": f"{e.__class__.__name__}: {str(e)[:200]}"}), 502
+
+
 @app.route("/api/unprotected", methods=["GET"])
 def api_unprotected():
     """Open positions with no working sell order. The dashboard shows this as a
@@ -434,6 +540,23 @@ def api_bars():
              "l": b["l"] / 100, "c": b["c"] / 100, "v": b.get("v")} for b in bars]})
     except Exception as e:
         return jsonify({"error": str(e)[:200]}), 502
+
+
+@app.get("/api/regime")
+def api_regime():
+    """Market regime read: green / yellow / red. READ-ONLY, ADDITIVE.
+
+    Answers "is this a tape worth acting in?" - a separate question from the
+    radar's "what just happened?". The radar is unchanged; this is a gate that
+    sits beside it. Never raises: on failure it reports regime "unknown", which
+    the playbooks treat as stand down.
+    """
+    try:
+        return jsonify(regime.read(AlpacaClient()))
+    except Exception as e:
+        return jsonify({"regime": "unknown", "label": "UNKNOWN", "pct": None,
+                        "note": "Could not read the tape - do not guess.",
+                        "indexes": {}, "errors": [str(e)[:200]]}), 200
 
 
 @app.get("/api/news")
@@ -585,9 +708,14 @@ def api_brief():
         + f"\n\nTop gainers: {movers or '(none)'}"
         + f"\n\nMacro (FRED, latest): {macro_txt}"
     )
+    # Same container-path bug as the radar trigger had. Also resolve the CLI:
+    # on Windows `claude` is a .cmd shim and needs shell resolution.
+    src = pathlib.Path(__file__).resolve().parent
+    claude = shutil.which("claude") or shutil.which("claude.cmd") or "claude"
     try:
-        p = subprocess.run(["claude", "-p", prompt, "--dangerously-skip-permissions",
-                            "--output-format", "text"], cwd="/app",
+        p = subprocess.run([claude, "-p", prompt, "--dangerously-skip-permissions",
+                            "--output-format", "text"], cwd=str(src.parent),
+                           shell=(os.name == "nt"),
                            capture_output=True, text=True, timeout=300)
         text = (p.stdout or "").strip() or (p.stderr or "").strip() or "(no output)"
         return jsonify({"ok": p.returncode == 0, "brief": text})
@@ -601,14 +729,24 @@ def api_brief():
 def api_run_radar():
     """Trigger a radar scan on demand (the UI 'Refresh Radar' button). Also runs
     4x/day via cron. Returns when done (~15-40s: movers + news + LLM scoring)."""
+    # Absolute paths + the SAME interpreter that is running this API. The old
+    # version was ["python", "src/radar.py"] with cwd="/app" - the container path
+    # from the Docker era. Running locally there is no /app, so the call threw
+    # before radar ever started and Re-scan silently did nothing.
+    src = pathlib.Path(__file__).resolve().parent          # bot/src
     try:
-        p = subprocess.run(["python", "src/radar.py"], cwd="/app",
+        p = subprocess.run([sys.executable, str(src / "radar.py")],
+                           cwd=str(src.parent),            # bot/  (config reads bot/.env)
                            capture_output=True, text=True, timeout=180)
-        return jsonify({"ok": p.returncode == 0, "stdout": (p.stdout or "")[-2000:]})
+        out = ((p.stdout or "") + (p.stderr or ""))[-2000:]
+        if p.returncode != 0:
+            print(f"[radar] exit {p.returncode}\n{out}")
+        return jsonify({"ok": p.returncode == 0, "stdout": out,
+                        "error": None if p.returncode == 0 else f"radar exit {p.returncode}"})
     except subprocess.TimeoutExpired:
-        return jsonify({"ok": False, "error": "radar timed out"}), 504
+        return jsonify({"ok": False, "error": "radar timed out after 180s"}), 504
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)[:300]}), 500
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {str(e)[:280]}"}), 500
 
 
 if __name__ == "__main__":

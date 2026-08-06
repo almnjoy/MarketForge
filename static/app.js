@@ -47,6 +47,17 @@ document.querySelectorAll('#tabs button').forEach((b) => b.onclick = () => {
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('on', v.id === 'view-' + b.dataset.tab));
   // admin is a snapshot, not a live poll - refresh it when you open the tab
   if (b.dataset.tab === 'admin') loadAdmin();
+  // same for saved pages: read the directory on open, not on a timer
+  if (b.dataset.tab === 'saved') loadSavedGrid();
+  // A hidden element has no scrollHeight, so every scroll-to-bottom done while
+  // the COPILOT tab was display:none silently did nothing and it opened at the
+  // top. Scroll AFTER the tab is visible and laid out.
+  if (b.dataset.tab === 'copilot') {
+    requestAnimationFrame(() => {
+      const l = $('#chatLog'); if (l) l.scrollTop = l.scrollHeight;
+      const t = $('#chatInput'); if (t) t.focus();
+    });
+  }
 });
 
 /* admin sub-tabs: the whole inventory on one screen was a wall */
@@ -137,7 +148,25 @@ function candles(bars, w = 880, h = 340, type = 'candle') {
 }
 
 /* ---------- overview ---------- */
-let chartSym = 'SPY';
+// Chart symbol precedence: whatever you looked at last (this machine) -> your
+// biggest open position -> SPY. Opening on SPY when you are holding something is
+// the wrong default: the thing you own is the thing you care about.
+let chartSym = localStorage.getItem('mfChartSym') || 'SPY';
+let chartPinned = !!localStorage.getItem('mfChartSym');
+async function pickDefaultChart() {
+  if (chartPinned) return;                       // a real choice always wins
+  try {
+    const pos = await J('/api/bot/positions').catch(() => []);
+    if (!Array.isArray(pos) || !pos.length) return;
+    const top = pos.slice().sort((a, b) =>
+      Math.abs(Number(b.market_value) || 0) - Math.abs(Number(a.market_value) || 0))[0];
+    if (top?.symbol && top.symbol !== chartSym) {
+      chartSym = top.symbol;
+      $('#chartSym').value = chartSym;
+      loadChart();
+    }
+  } catch {}
+}
 /* Interactive chart: range switcher, candle/line toggle, and a crosshair that
    reports the real OHLC of the bar under the pointer. The maths mirrors candles()
    exactly - if you change padding or the price-axis width there, change it here. */
@@ -190,7 +219,11 @@ async function loadChart() {
       `<a href="${esc(n.url)}" target="_blank">▸ [${esc(n.source || 'news')}] ${esc(n.headline)}</a>`).join('') || '';
   } catch (e) { $('#bigChart').innerHTML = `<span class="dim">chart error: ${esc(e.message)}</span>`; }
 }
-$('#chartSym').addEventListener('change', () => { chartSym = $('#chartSym').value.toUpperCase().trim() || 'SPY'; loadChart(); });
+$('#chartSym').addEventListener('change', () => {
+  chartSym = $('#chartSym').value.toUpperCase().trim() || 'SPY';
+  chartPinned = true; localStorage.setItem('mfChartSym', chartSym);
+  loadChart();
+});
 $('#chartRanges').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
   if (b.dataset.r) {
@@ -287,11 +320,28 @@ async function loadRadar() {
 }
 $('#radarRefresh').onclick = async () => {
   $('#radarRefresh').textContent = 'Scanning...';
-  try { await fetch('/api/bot/run/radar', { method: 'POST' }); await loadRadar(); notify('radar re-scan complete', 'ok'); }
-  catch { notify('radar re-scan failed', 'err'); }
+  try {
+    // fetch does NOT throw on 4xx/5xx, so this used to toast "complete" for a
+    // failed scan. Check the status AND the payload, and surface the real error.
+    const res = await fetch('/api/bot/run/radar', { method: 'POST' });
+    const r = await res.json().catch(() => ({}));
+    await loadRadar();
+    if (!res.ok || r.ok === false) {
+      const why = r.error || `HTTP ${res.status}`;
+      notify(`radar re-scan FAILED: ${why}`, 'err');
+      console.error('[radar]', r.stdout || why);
+    } else {
+      const n = (r.stdout || '').match(/(\d+)\s+alert/i);
+      notify(`radar re-scan complete${n ? ` · ${n[1]} alert(s)` : ''}`, 'ok');
+    }
+  } catch (e) { notify(`radar re-scan failed: ${e.message}`, 'err'); }
   $('#radarRefresh').textContent = 'Re-scan';
 };
-window.chartTo = (sym) => { chartSym = sym; $('#chartSym').value = sym; document.querySelector('[data-tab=overview]').click(); loadChart(); };
+window.chartTo = (sym) => {
+  chartSym = sym; $('#chartSym').value = sym;
+  chartPinned = true; localStorage.setItem('mfChartSym', sym);
+  document.querySelector('[data-tab=overview]').click(); loadChart();
+};
 
 /* ---------- retail (reddit) ---------- */
 async function loadReddit() {
@@ -357,12 +407,49 @@ async function loadPanels(force = false) {
     // READ full-bleed, not squinted at through a 400px letterbox with two scrollbars.
     card.innerHTML = `<div class="wb-t">${esc(p.title)}` +
       `<span class="right dim">${esc(p.name)}</span>` +
+      `<button class="wb-savepage" title="save just this tile as its own page">⇩ page</button>` +
+      `<button class="wb-del" title="remove this tile from the board (recoverable in _trash)">✕</button>` +
       `<button class="wb-max" title="expand to full screen (Esc to close)">⤢</button></div>`;
+    // Remove a tile from the live board without opening the folder. Copied to
+    // _trash first, so this is undoable from disk.
+    card.querySelector('.wb-del').onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Remove "${p.title || p.name}" from the board?\n\nA copy goes to saved-workbenches/_trash/ so it can be recovered.`)) return;
+      const r = await J('/api/panels/delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ panel: p.name }),
+      }).catch(() => ({}));
+      notify(r.ok ? `panel removed: ${p.name} (in _trash)` : `remove failed: ${r.error || '?'}`,
+             r.ok ? 'ok' : 'err');
+      if (r.ok) loadPanels(true);
+    };
     card.querySelector('.wb-max').onclick = (e) => {
       e.stopPropagation();
       const on = card.classList.toggle('maximized');
       document.body.classList.toggle('has-max', on);
       e.target.textContent = on ? '✕' : '⤢';
+    };
+    // Save ONE tile as its own page. A deep-dive dossier deserves its own
+    // surface instead of being one card among four on a shared board.
+    card.querySelector('.wb-savepage').onclick = async (e) => {
+      e.stopPropagation();
+      const btn = e.target;
+      const name = prompt('Save this tile as its own page.\nPage name:', p.title || p.name.replace(/\.html$/, ''));
+      if (name === null) return;
+      btn.disabled = true;
+      try {
+        const r = await J('/api/workbench/save-panel', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ panel: p.name, name: name.trim() }),
+        });
+        btn.textContent = r.ok ? '✓ saved' : 'failed';
+        notify(r.ok ? `page saved: ${r.name}` : `save failed: ${r.error || '?'}`, r.ok ? 'ok' : 'err');
+        if (r.ok) { loadSavedList(); loadSavedGrid(); }
+      } catch (err) {
+        btn.textContent = 'failed';
+        notify(`save failed: ${err.message}`, 'err');
+      }
+      setTimeout(() => { btn.textContent = '⇩ page'; btn.disabled = false; }, 2200);
     };
     const fr = document.createElement('iframe');
     fr.sandbox = 'allow-scripts allow-same-origin allow-popups';
@@ -405,6 +492,112 @@ $('#wbLoad').onclick = async () => {
     loadPanels(true); loadSavedList();
   } else notify('board load failed', 'err');
 };
+
+/* ---------- SAVED pages: tile browser + reader overlay ----------
+   Clicking a tile READS the page in an overlay. It deliberately does not touch
+   the live workbench - "open the Ariel report" should never cost you the board
+   you are working on. Loading onto the workbench is a separate, explicit click. */
+let savedCache = [];
+function svFmt(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000), now = Date.now() / 1000;
+  const mins = Math.round((now - ts) / 60);
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60 * 24) return `${Math.round(mins / 60)}h ago`;
+  return d.toISOString().slice(0, 10);
+}
+async function loadSavedGrid() {
+  const grid = $('#savedGrid');
+  if (!grid) return;
+  const d = await J('/api/workbench/saved').catch(() => ({ saved: [] }));
+  savedCache = d.saved || [];
+  const showAuto = $('#svShowAuto')?.checked;
+  const rows = savedCache.filter((s) => showAuto || !s.auto);
+  $('#svCount').textContent = `${rows.length} page(s).` +
+    (savedCache.length - rows.length ? ` ${savedCache.length - rows.length} autosave(s) hidden.` : '');
+  if (!rows.length) {
+    grid.innerHTML = '<div class="panel dim">No saved pages yet. On the WORKBENCH, ' +
+      'hit <code>⇩ page</code> on any tile to save it as its own page.</div>';
+    return;
+  }
+  grid.innerHTML = rows.map((s) => {
+    const titles = (s.titles || []).map((t) => `<span>· ${esc(t)}</span>`).join('') ||
+      '<span class="dim">· (empty)</span>';
+    return `<div class="sv-tile${s.auto ? ' auto' : ''}" data-board="${esc(s.name)}">
+      <button class="sv-del" data-del="${esc(s.name)}" title="delete this page (recoverable in _trash)">✕</button>
+      <div class="sv-tile-h">${esc(s.name)}</div>
+      <div class="sv-tile-titles">${titles}</div>
+      <div class="sv-tile-f">
+        <span class="sv-chip n">${s.panels} panel${s.panels === 1 ? '' : 's'}</span>
+        <span class="sv-chip">${esc(svFmt(s.ts))}</span>
+        ${s.auto ? '<span class="sv-chip">auto</span>' : ''}
+      </div></div>`;
+  }).join('');
+  grid.querySelectorAll('.sv-tile').forEach((t) => {
+    t.onclick = () => openSavedReader(t.dataset.board);
+  });
+  grid.querySelectorAll('.sv-del').forEach((b) => {
+    b.onclick = async (e) => {
+      e.stopPropagation();               // do not open the reader
+      const name = b.dataset.del;
+      if (!confirm(`Delete saved page "${name}"?\n\nIt moves to saved-workbenches/_trash/ and can be recovered from the folder.`)) return;
+      const r = await J('/api/workbench/delete-saved', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      }).catch(() => ({}));
+      notify(r.ok ? `page deleted: ${name} (in _trash)` : `delete failed: ${r.error || '?'}`,
+             r.ok ? 'ok' : 'err');
+      if (r.ok) { loadSavedGrid(); loadSavedList(); }
+    };
+  });
+}
+function openSavedReader(board) {
+  const s = savedCache.find((x) => x.name === board);
+  if (!s) return;
+  const body = $('#svReaderBody');
+  body.className = 'sv-reader-body' + ((s.files || []).length > 1 ? ' multi' : '');
+  body.innerHTML = '';
+  for (const f of (s.files || [])) {
+    const fr = document.createElement('iframe');
+    fr.sandbox = 'allow-scripts allow-same-origin allow-popups';
+    fr.src = `/api/saved/panel?board=${encodeURIComponent(board)}&name=${encodeURIComponent(f.name)}&v=${f.mtime}`;
+    fr.onload = () => { try {
+      fr.contentDocument.documentElement.dataset.theme = document.documentElement.dataset.theme;
+    } catch {} };
+    body.appendChild(fr);
+  }
+  if (!(s.files || []).length) body.innerHTML = '<div class="panel dim">This page has no panels.</div>';
+  $('#svReaderTitle').textContent = board;
+  $('#svReaderMeta').textContent = `${s.panels} panel(s) · ${svFmt(s.ts)}`;
+  $('#svReaderLoad').dataset.board = board;
+  $('#svReader').classList.add('on');
+  document.body.classList.add('has-reader');
+}
+function closeSavedReader() {
+  $('#svReader')?.classList.remove('on');
+  document.body.classList.remove('has-reader');
+  const b = $('#svReaderBody'); if (b) b.innerHTML = '';   // stop iframe timers
+}
+$('#svReaderClose') && ($('#svReaderClose').onclick = closeSavedReader);
+$('#svRefresh') && ($('#svRefresh').onclick = loadSavedGrid);
+$('#svShowAuto') && ($('#svShowAuto').onchange = loadSavedGrid);
+$('#svReaderLoad') && ($('#svReaderLoad').onclick = async (e) => {
+  const board = e.target.dataset.board;
+  if (!board) return;
+  if (!confirm(`Load "${board}" onto the live workbench?\n\nThe current board is autosaved first.`)) return;
+  const r = await J('/api/workbench/load', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: board }),
+  }).catch(() => ({}));
+  if (r.ok) {
+    notify(`board loaded: ${board} · previous autosaved as ${r.previous_saved_as}`, 'ok');
+    closeSavedReader(); loadPanels(true); loadSavedList(); loadSavedGrid();
+    tabTo('workbench');
+  } else notify('board load failed', 'err');
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('#svReader')?.classList.contains('on')) closeSavedReader();
+});
 
 /* ---------- rules ---------- */
 function mdToHtml(md) { /* tiny renderer: headings, bold, code, tables, lists */
@@ -510,9 +703,36 @@ const spokenKeys = new Set();  // identity of every message already accounted fo
 // (`msgs.slice(chatCount)`) then reads that old message aloud on every send.
 const msgKey = m => `${m.ts}|${m.role}|${String(m.text).length}|${String(m.text).slice(0, 64)}`;
 
+// Conversations are grouped by DAY. chatDay '' means today (the live one).
+// A new day therefore opens an empty chat by itself - nothing gets deleted.
+let chatDay = '';
+function renderDays(d) {
+  const box = $('#chatDays'); if (!box) return;
+  const today = d.today, days = d.days || [];
+  const label = (x) => {
+    if (x === today) return 'Today';
+    const y = new Date(Date.parse(today + 'T00:00:00') - 86400000).toISOString().slice(0, 10);
+    if (x === y) return 'Yesterday';
+    return new Date(x + 'T00:00:00').toLocaleDateString(undefined,
+      { month: 'short', day: 'numeric' });
+  };
+  const cur = chatDay || today;
+  box.innerHTML = days.map(s =>
+    `<button class="daybtn ${s.day === cur ? 'on' : ''}" data-day="${s.day}">` +
+    `<b>${label(s.day)} <span style="float:right;opacity:.55;font-weight:400">${s.n}</span></b>` +
+    `<span>${esc(s.preview || '...')}</span></button>`).join('') ||
+    '<div class="dim" style="padding:8px 11px;font-size:12.5px">no history yet</div>';
+  box.querySelectorAll('.daybtn').forEach(b => b.onclick = () => {
+    chatDay = b.dataset.day === today ? '' : b.dataset.day;
+    chatCount = -1; chatInit = false;   // force a full re-render + scroll to end
+    loadChat();
+  });
+}
+
 async function loadChat() {
-  const d = await J('/api/chat').catch(() => null);
+  const d = await J('/api/chat' + (chatDay ? `?day=${chatDay}` : '')).catch(() => null);
   if (!d) return;
+  renderDays(d);
   const msgs = [...d.inbox, ...d.outbox].sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
   if (chatInit && msgs.length === chatCount) return;
   chatCount = msgs.length;
@@ -625,7 +845,10 @@ async function loadAdmin() {
     ['Mode', t.mode || 'manual', ''],
     ['Auto-entries', t.auto ? 'ARMED' : 'off', t.auto ? 'loss' : 'up'],
     ['Live auto unlocked', t.live_auto ? 'YES' : 'no', t.live_auto ? 'loss' : 'up'],
-    ['Per trade', t.per_trade_cents != null ? fmt$(t.per_trade_cents / 100, 0) : '--', ''],
+    ['Per trade', t.per_trade != null ? fmt$(t.per_trade, 0) : '--', ''],
+    ['Max exposure', t.max_exposure != null ? fmt$(t.max_exposure, 0) : '--', ''],
+    ['Price floor', t.min_price != null ? fmt$(t.min_price, 0) : '--', ''],
+    ['Trail', t.trail_pct != null ? (t.trail_pct * 100).toFixed(0) + '%' : '--', ''],
     ['Max per day', t.max_per_day ?? '--', ''],
     ['Min score', t.min_score ?? '--', ''],
   ].map(([l, v, c]) => `<tr><td class="dim">${l}</td><td class="mono ${c}">${esc(String(v))}</td></tr>`).join('') + '</table>';
@@ -728,12 +951,19 @@ async function sendChat() {
   const t = $('#chatInput').value.trim();
   if (!t) return;
   $('#chatInput').value = '';
+  // Sending always lands in TODAY. If you were reading an old day, jump back to
+  // the live conversation rather than posting into a view that will not update.
+  if (chatDay) { chatDay = ''; chatCount = -1; chatInit = false; }
   await J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: t }) });
   loadChat();
 }
 $('#chatSend').onclick = sendChat;
 // Enter sends, Shift+Enter is a newline (the convention everyone already knows).
 // The box grows with the text instead of scrolling a one-line input.
+$('#chatNew').onclick = () => {
+  chatDay = ''; chatCount = -1; chatInit = false; loadChat();
+  requestAnimationFrame(() => $('#chatInput')?.focus());
+};
 const growInput = () => {
   const ta = $('#chatInput');
   ta.style.height = 'auto';
@@ -865,6 +1095,7 @@ const PAL_STATIC = [
   { k: 'go: catalyst radar', ico: '▦', run: () => tabTo('radar') },
   { k: 'go: retail radar (reddit)', ico: '▦', run: () => tabTo('retail') },
   { k: 'go: workbench', ico: '▦', run: () => tabTo('workbench') },
+  { k: 'go: saved pages', ico: '▦', run: () => tabTo('saved') },
   { k: 'go: copilot', ico: '▦', run: () => tabTo('copilot') },
   { k: 'go: journal', ico: '▦', run: () => tabTo('journal') },
   // rules moved under Admin, so the palette has to open the tab AND the sub-tab
@@ -1012,7 +1243,7 @@ J('/api/meta').then(m => {
   initTheme(m.theme);                        // config default, if nothing saved locally
   setTimeout(() => { if ($('#ttsToggle').checked) speakText(`Welcome back, ${window._user}.`); }, 1200);
 }).catch(() => {});
-loadOverview(); loadChart(); loadRadar(); loadReddit(); loadPanels(true); loadRules(); loadChat(); loadNaked();
+loadOverview(); loadChart(); pickDefaultChart(); loadRadar(); loadReddit(); loadPanels(true); loadRules(); loadChat(); loadNaked();
 setInterval(loadOverview, 15000);
 setInterval(loadNaked, 20000);   // an unarmed position must surface fast
 setInterval(loadRadar, 30000);

@@ -38,6 +38,7 @@ RULES = ROOT / "RULES.md"
 SAVED = ROOT / "saved-workbenches"
 MEMORY = ROOT / "memory.md"        # standing preferences the copilot honors
 JOURNAL = ROOT / "journal.jsonl"   # the decision log Replay reconstructs from
+SHOTS = ROOT / "tv-shots"          # TradingView captures - agents READ these
 
 DEFAULT_MEMORY = """# Trading Memory
 The copilot honors these on every turn. Edit here or tell it "remember ...".
@@ -79,14 +80,62 @@ BOT = str(_cfg["bot_base"]).rstrip("/")
 PORT = int(os.environ.get("MF_PORT") or _cfg["port"])
 
 
+BOT_PID = ROOT / "bot" / "data" / "engine.pid"
+
+
+def _pid_alive(pid):
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["tasklist", "/FI", f"PID eq {int(pid)}"],
+                                 capture_output=True, text=True, timeout=8).stdout
+            return str(int(pid)) in out
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def _kill_stale_engine():
+    """Kill an engine left over from a previous run.
+
+    Closing the console window sends CTRL_CLOSE_EVENT and Python gets ~5s, so
+    atexit does NOT reliably fire on Windows - the engine can survive with no
+    window attached. Two of those running at once means two radar schedulers on
+    one brokerage account, which is exactly the double-entry problem we retired
+    rocker to avoid. So: record the pid, and clean it up on the way IN as well
+    as on the way out.
+    """
+    try:
+        if not BOT_PID.exists():
+            return
+        pid = int(BOT_PID.read_text().strip() or 0)
+        if pid and pid != os.getpid() and _pid_alive(pid):
+            print(f"[embedded bot] killing orphaned engine pid {pid} from a previous run")
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                               capture_output=True, timeout=10)
+            else:
+                os.kill(pid, 9)
+            time.sleep(1)
+        BOT_PID.unlink(missing_ok=True)
+    except Exception as e:
+        print(f"[embedded bot] stale-pid check failed: {e}")
+
+
 def _bot_supervisor():
     """Keep the embedded bot engine alive: spawn, watch, restart with backoff."""
     import atexit
+    _kill_stale_engine()
     backoff = 3
     while True:
         proc = subprocess.Popen([sys.executable, str(ROOT / "bot" / "run_bot.py")],
                                 cwd=str(ROOT / "bot"))
-        atexit.register(lambda p=proc: p.poll() is None and p.kill())
+        try:
+            BOT_PID.parent.mkdir(parents=True, exist_ok=True)
+            BOT_PID.write_text(str(proc.pid), encoding="utf-8")
+        except Exception:
+            pass
+        atexit.register(lambda p=proc: p.poll() is None and _kill_proc(p))
         rc = proc.wait()
         print(f"[embedded bot] exited rc={rc}; restarting in {backoff}s "
               f"(check bot/.env if this loops)")
@@ -97,6 +146,39 @@ _vb_profile = {"id": None}   # the app's default voice, resolved once from confi
 _VB_ENGINE_OK = {}           # profile_id -> the engine field shape Voicebox accepted
 _STARTED_AT = time.time()    # process start, for the Admin tab's uptime
 USAGE = ROOT / "usage.jsonl"  # measured copilot spend, one line per bridge turn
+STATE = ROOT / "state.json"   # live snapshot ON DISK - see _state_writer()
+
+
+def _state_writer():
+    """Write a live snapshot of the desk to state.json every 20s.
+
+    WHY THIS EXISTS: not every agent lane can reach http://localhost. Cowork's
+    shell is a sandboxed VM with this folder MOUNTED but no route to the host
+    network, so `curl localhost:8410` fails there even though its file tools are
+    reading the real disk. Rather than make those lanes drive a browser to see
+    whether a position is naked, the desk publishes its own state as a file that
+    anything with read access can consume. Files are the lowest common
+    denominator every lane shares - same idea as the panels and chat buses.
+
+    Read-only by definition: acting on it still goes through the API.
+    """
+    while True:
+        snap = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "port": PORT,
+                "embedded": EMBEDDED, "stale_after_s": 60}
+        for key, ep in (("status", "status"), ("positions", "positions"),
+                        ("orders", "orders"), ("unprotected", "unprotected"),
+                        ("broker_orders", "broker/orders"),
+                        ("radar", "radar"), ("config", "config")):
+            try:
+                raw, code = _bot_get(ep, timeout=12)
+                snap[key] = json.loads(raw) if code == 200 else {"error": f"HTTP {code}"}
+            except Exception as e:
+                snap[key] = {"error": f"{e.__class__.__name__}: {str(e)[:120]}"}
+        try:
+            STATE.write_text(json.dumps(snap, indent=1), encoding="utf-8")
+        except Exception:
+            pass
+        time.sleep(20)
 
 
 def _usage_log(ev: dict, model: str):
@@ -154,8 +236,17 @@ The user's standing MEMORY (memory.md - HONOR these, they override defaults; if 
 - Reply CONVERSATIONALLY in 1-3 short sentences. Your stdout IS the reply: it renders in
   the COPILOT tab and is SPOKEN ALOUD via Voicebox. Plain text only - no markdown, no lists.
 - You MAY use tools: build/edit panels/*.html (the Workbench renders live, ~2.5s) and read
-  the bot over http://{bot}/api/* (status, radar, reddit, bars, news, spark). When an answer
-  deserves a panel, build it and say so in a sentence.
+  the bot over http://{bot}/api/* (status, radar, reddit, bars, news, spark, unprotected,
+  broker/orders). When an answer deserves a panel, build it and say so in a sentence.
+- TRADINGVIEW is open in a browser you can drive, on THIS dashboard's own API
+  (http://127.0.0.1:{port}), not the bot's:
+    POST /api/tv/open  {{"symbol":"AMWL","interval":"1d"}}   move his chart
+    POST /api/tv/shot  {{}}                                  capture it to tv-shots/*.png
+  **"pull up X", "show me X", "chart X", "put X on the daily" = MOVE HIS TRADINGVIEW
+  CHART with /api/tv/open.** Do not answer that by building a panel - he is looking at
+  TradingView, and a panel is not what he asked for. Build a panel when he asks for a
+  board, a brief, a review, a comparison, or research he wants to keep.
+  Both is fine when it helps: move the chart, then build the notes beside it.
 - NEVER place a trade from this lane. The trade ticket and the interactive CC window are
   Dustin's execution lanes, not yours.
 
@@ -205,7 +296,8 @@ def _bridge_turn(new_texts):
         mem = MEMORY.read_text(encoding="utf-8", errors="replace")[:1400]
     except Exception:
         pass
-    prompt = BRIDGE_PROMPT.format(bot=BOT.split("//", 1)[-1], memory=mem or "(empty)",
+    prompt = BRIDGE_PROMPT.format(bot=BOT.split("//", 1)[-1], port=PORT,
+                                  memory=mem or "(empty)",
                                   history=hist_txt or "(none)", new="\n".join(new_texts))
     argv = [bin_, "-p", "--model", BRIDGE_MODEL, "--dangerously-skip-permissions",
             "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
@@ -305,7 +397,9 @@ _chat_lock = threading.Lock()
 # Only these bot GET paths are reachable through the proxy (mirror of what the
 # UI needs; keeps anything else on the bot unreachable from the browser).
 BOT_GET = {"status", "positions", "orders", "equity", "radar", "reddit",
-           "config", "log", "spark", "bars", "news", "unprotected"}
+           "config", "log", "spark", "bars", "news", "unprotected",
+           "broker/orders",   # live broker orders; /orders is the local ledger
+           "regime"}          # market regime gate (read-only, additive)
 
 
 def _bot_get(path_qs: str, timeout=25):
@@ -425,11 +519,18 @@ def _usage_totals():
     return tot
 
 
-def _panels_state(root=None):
-    """[{name, title, size, mtime}] sorted by filename. Title from a leading
-    <!-- title: X --> comment; size from <!-- size: page|full|wide|tall -->
-    (layout hint: page = a whole document surface for deep dives and full-page
-    reviews, full = whole row, wide = double width, tall = extra height)."""
+def _panels_state(root=None, order="new"):
+    """[{name, title, size, mtime}]. Title from a leading <!-- title: X -->
+    comment; size from <!-- size: page|full|wide|tall --> (layout hint: page = a
+    whole document surface for deep dives, full = whole row, wide = double
+    width, tall = extra height).
+
+    order="new" (default): NEWEST FIRST by mtime, so a panel that was just
+    written or edited lands at the top of the workbench instead of hiding behind
+    whatever filename prefix sorts lower. Filename prefixes still order ties.
+    order="name": the old filename sort, kept for saved-board rendering where
+    the author's intended sequence matters more than recency.
+    """
     root = root or PANELS
     items = []
     if root.exists():
@@ -447,6 +548,8 @@ def _panels_state(root=None):
                 pass
             items.append({"name": f.name, "title": title, "size": size,
                           "mtime": round(f.stat().st_mtime, 2)})
+    if order == "new":
+        items.sort(key=lambda i: i["mtime"], reverse=True)
     return items
 
 
@@ -550,7 +653,34 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(f, "text/html; charset=utf-8")
 
         if path == "/api/chat":
-            return self._json({"inbox": _read_jsonl(INBOX), "outbox": _read_jsonl(OUTBOX)})
+            # Conversations are grouped BY DAY. Nothing is ever deleted or
+            # archived: a "new chat" is simply a new day with no messages yet,
+            # and the sidebar is the list of days that do have messages.
+            q = urllib.parse.parse_qs(qs)
+            day = (q.get("day", [""])[0] or "")[:10]
+            inbox, outbox = _read_jsonl(INBOX, 4000), _read_jsonl(OUTBOX, 4000)
+            allm = inbox + outbox
+            sess = {}
+            for m in allm:
+                d = str(m.get("ts", ""))[:10]
+                if not d:
+                    continue
+                s = sess.setdefault(d, {"day": d, "n": 0, "last": "", "preview": ""})
+                s["n"] += 1
+                if str(m.get("ts", "")) >= s["last"]:
+                    s["last"] = str(m.get("ts", ""))
+                if m.get("role") == "user" and not s["preview"]:
+                    s["preview"] = str(m.get("text", ""))[:60]
+            for s in sess.values():          # fall back to any text for the label
+                if not s["preview"]:
+                    first = next((m for m in allm if str(m.get("ts", ""))[:10] == s["day"]), None)
+                    s["preview"] = str((first or {}).get("text", ""))[:60]
+            days = sorted(sess.values(), key=lambda s: s["day"], reverse=True)
+            if day:
+                inbox = [m for m in inbox if str(m.get("ts", "")).startswith(day)]
+                outbox = [m for m in outbox if str(m.get("ts", "")).startswith(day)]
+            return self._json({"inbox": inbox, "outbox": outbox, "days": days,
+                               "day": day, "today": time.strftime("%Y-%m-%d")})
 
         if path == "/api/watch":
             # one cheap poll target: anything changed?
@@ -564,6 +694,22 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/rules":
             txt = RULES.read_text(encoding="utf-8", errors="replace") if RULES.exists() else "# RULES.md missing"
             return self._raw(txt.encode(), "text/markdown; charset=utf-8")
+
+        if path == "/api/tv/status":
+            try:
+                import tv
+                return self._json(tv.status())
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:160]}, 501)
+
+        if path == "/api/shot":
+            # serve a TradingView capture back to the browser / a panel
+            q = urllib.parse.parse_qs(qs)
+            name = os.path.basename((q.get("name", [""])[0] or ""))
+            f = (SHOTS / name).resolve()
+            if not name.endswith(".png") or not str(f).startswith(str(SHOTS.resolve())):
+                return self._json({"error": "bad name"}, 400)
+            return self._file(f, "image/png")
 
         if path == "/api/meta":
             return self._json({"bot_base": BOT, "port": PORT, "root": str(ROOT),
@@ -657,10 +803,16 @@ class Handler(BaseHTTPRequestHandler):
                     "journal": len(jrn), "journal_kinds": kinds,
                     "chat": len(_read_jsonl(INBOX, 4000)) + len(_read_jsonl(OUTBOX, 4000)),
                 },
+                # NOTE: /api/config exposes DOLLARS under short keys (notional,
+                # max_exposure, min_price) - not the *_cents names from bot/.env.
+                # Reading the .env names here silently rendered "--" in Admin.
                 "trading": {
                     "env": bot_cfg.get("env"), "auto": bool(ra.get("execute")),
                     "live_auto": bool(ra.get("live_enabled")),
-                    "per_trade_cents": ra.get("notional_cents"),
+                    "per_trade": ra.get("notional"),
+                    "max_exposure": ra.get("max_exposure"),
+                    "min_price": ra.get("min_price"),
+                    "trail_pct": ra.get("trail_pct"),
                     "max_per_day": ra.get("max_per_day"), "min_score": ra.get("min_score"),
                     "feed": bot_cfg.get("data_feed"), "mode": bot_cfg.get("mode"),
                 },
@@ -689,14 +841,41 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"enabled": BRIDGE, "model": BRIDGE_MODEL, **_bridge})
 
         if path == "/api/workbench/saved":
+            # Now carries each board's panel list so the SAVED tab can render
+            # real tiles (title + preview) instead of a bare dropdown of names.
             out = []
             if SAVED.exists():
-                for d in sorted(SAVED.iterdir(), reverse=True):
-                    if d.is_dir():
-                        n = len(list(d.glob("*.html")))
-                        out.append({"name": d.name, "panels": n,
-                                    "ts": round(d.stat().st_mtime, 0)})
+                for d in sorted(SAVED.iterdir(), key=lambda p: p.stat().st_mtime,
+                                reverse=True):
+                    if not d.is_dir() or d.name == "_trash":
+                        continue   # deleted pages live in _trash; not listed
+                    panels = _panels_state(d, order="name")
+                    out.append({
+                        "name": d.name,
+                        "panels": len(panels),
+                        "ts": round(d.stat().st_mtime, 0),
+                        "auto": d.name.startswith("_autosave-"),
+                        "titles": [p["title"] for p in panels][:6],
+                        "files": [{"name": p["name"], "title": p["title"],
+                                   "size": p["size"], "mtime": p["mtime"]}
+                                  for p in panels],
+                    })
             return self._json({"saved": out})
+
+        if path == "/api/saved/panel":
+            # Serve ONE panel out of a saved board, so a report can be opened
+            # and read without loading it over the live workbench.
+            q = urllib.parse.parse_qs(qs)
+            board = _safe_board_name(q.get("board", [""])[0])
+            name = q.get("name", [""])[0]
+            if not board or not name.endswith(".html"):
+                return self._json({"error": "board and .html name required"}, 400)
+            base = (SAVED / board).resolve()
+            f = (base / name).resolve()
+            if not str(base).startswith(str(SAVED.resolve())) \
+                    or not str(f).startswith(str(base)) or not f.is_file():
+                return self._json({"error": "not found"}, 404)
+            return self._file(f, "text/html; charset=utf-8")
 
         if path == "/api/tts/profiles":
             # every voice Voicebox knows about, so you can pick yours by name
@@ -787,6 +966,70 @@ class Handler(BaseHTTPRequestHandler):
                 n += 1
             _journal_log("board", f"saved board '{name}' ({n} panels)")
             return self._json({"ok": True, "name": name, "panels": n})
+
+        if parsed.path == "/api/workbench/save-panel":
+            # Save ONE tile as its own page. The Ariel dossier belongs on its own
+            # page, not stacked under three other cards on a shared board.
+            src_name = str(body.get("panel") or "")
+            if not src_name.endswith(".html"):
+                return self._json({"error": "panel (.html) required"}, 400)
+            src = (PANELS / src_name).resolve()
+            if not str(src).startswith(str(PANELS.resolve())) or not src.is_file():
+                return self._json({"error": "unknown panel"}, 404)
+            # default the page name to the panel's own title
+            fallback = src.stem
+            try:
+                head = src.read_text(encoding="utf-8", errors="replace")[:400]
+                if "title:" in head:
+                    fallback = head.split("title:", 1)[1].split("-->", 1)[0].strip() or fallback
+            except Exception:
+                pass
+            name = _safe_board_name(body.get("name") or fallback)
+            if not name:
+                return self._json({"error": "name required"}, 400)
+            dest = SAVED / name
+            dest.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest / src.name)
+            _journal_log("board", f"saved page '{name}' (1 panel: {src.name})")
+            return self._json({"ok": True, "name": name, "panels": 1,
+                               "panel": src.name})
+
+        if parsed.path == "/api/workbench/delete-saved":
+            # Delete a saved page. Nothing is unlinked - it moves to
+            # saved-workbenches/_trash/<ts>-<name>/ so a misclick is recoverable
+            # from the folder. The UI treats it as gone.
+            name = _safe_board_name(body.get("name"))
+            src = SAVED / (name or "")
+            if not name or not src.is_dir():
+                return self._json({"error": "unknown page"}, 404)
+            trash = SAVED / "_trash"
+            trash.mkdir(parents=True, exist_ok=True)
+            dest = trash / f"{time.strftime('%Y%m%d-%H%M%S')}-{name}"
+            try:
+                shutil.move(str(src), str(dest))
+            except Exception as e:
+                return self._json({"error": f"could not delete: {str(e)[:160]}"}, 500)
+            _journal_log("board", f"deleted page '{name}' (recoverable in _trash/{dest.name})")
+            return self._json({"ok": True, "name": name, "trashed_as": dest.name})
+
+        if parsed.path == "/api/panels/delete":
+            # Remove ONE tile from the live workbench. Same deal: copied to
+            # _trash first, then removed from panels/ so the grid drops it.
+            pname = str(body.get("panel") or "")
+            if not pname.endswith(".html"):
+                return self._json({"error": "panel (.html) required"}, 400)
+            f = (PANELS / pname).resolve()
+            if not str(f).startswith(str(PANELS.resolve())) or not f.is_file():
+                return self._json({"error": "unknown panel"}, 404)
+            trash = SAVED / "_trash" / f"{time.strftime('%Y%m%d-%H%M%S')}-panel"
+            trash.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(f, trash / f.name)
+                f.unlink()
+            except Exception as e:
+                return self._json({"error": f"could not remove: {str(e)[:160]}"}, 500)
+            _journal_log("board", f"removed panel '{pname}' (recoverable in _trash/{trash.name})")
+            return self._json({"ok": True, "panel": pname, "trashed_as": trash.name})
 
         if parsed.path == "/api/workbench/load":
             name = _safe_board_name(body.get("name"))
@@ -882,6 +1125,29 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"ok": False, "error": f"bot unreachable: {str(e)[:120]}"}, 502)
 
+        if parsed.path in ("/api/tv/open", "/api/tv/shot"):
+            # TradingView remote control. Optional: if tv.py or the debug browser
+            # is missing, this fails loudly and nothing else in the desk cares.
+            try:
+                import tv
+            except Exception as e:
+                return self._json({"ok": False, "error": f"tv module unavailable: {e}"}, 501)
+            if parsed.path == "/api/tv/open":
+                sym = str(body.get("symbol", "")).strip()
+                if not sym:
+                    return self._json({"ok": False, "error": "symbol required"}, 400)
+                r = tv.open_chart(sym, body.get("interval"))
+                _journal_log("note", f"chart -> {sym}"
+                             + (f" {body.get('interval')}" if body.get("interval") else "")
+                             + ("" if r.get("ok") else f" (FAILED: {r.get('error')})"))
+                return self._json(r, 200 if r.get("ok") else 502)
+            name = time.strftime("tv-%Y%m%d-%H%M%S.png")
+            r = tv.shot(str(SHOTS / name))
+            if r.get("ok"):
+                r["web_path"] = f"/api/shot?name={name}"
+                _journal_log("note", f"chart screenshot {name}")
+            return self._json(r, 200 if r.get("ok") else 502)
+
         if parsed.path == "/api/bot/protect":
             # arm a trailing stop on an EXISTING position (the VRM fix)
             try:
@@ -915,6 +1181,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     PANELS.mkdir(exist_ok=True)
+    SHOTS.mkdir(exist_ok=True)
     SAVED.mkdir(exist_ok=True)
     if not MEMORY.exists():
         MEMORY.write_text(DEFAULT_MEMORY, encoding="utf-8")
@@ -940,6 +1207,9 @@ def main():
         print(f"  bot API: {BOT}")
     print(f"  panels:  {PANELS}  (Claude Code writes here; the WORKBENCH renders it live)")
     print("  chat:    chat-inbox.jsonl / chat-outbox.jsonl")
+    threading.Thread(target=_state_writer, daemon=True).start()
+    print(f"  state:   {STATE.name}  (live snapshot on disk, every 20s - lanes "
+          f"that cannot reach localhost read this)")
     if BRIDGE:
         threading.Thread(target=_bridge_loop, daemon=True).start()
         print(f"  bridge:  LIVE - new chat lines auto-run `claude -p` ({BRIDGE_MODEL}); replies are spoken")

@@ -23,6 +23,46 @@ guarantee has been proven on a real slow fill - see "The exit guarantee" below.
 If you are the in-app copilot or the scoped space, and a request needs the lane
 above you, say so and stop. Do not quietly widen your own scope.
 
+## What each lane can physically REACH (this trips people up)
+
+|  | writes files here | reaches `localhost:8410` | sees pasted images | keeps context |
+|---|---|---|---|---|
+| **In-app copilot** (bridge) | yes | **yes, natively** - it runs on the machine | no | no, each turn is fresh |
+| **Cowork** (this space / full-repo) | yes | **no from its shell** - see below | **yes** | yes, long session |
+| **CC CLI** | yes | yes | from disk only | yes |
+
+**The Cowork gotcha:** Cowork's file tools write to the REAL folder on the machine,
+but its *shell* is a sandboxed Linux VM with this folder mounted and **no route to
+the host network**. So `curl localhost:8410` fails there while `Read`/`Edit` work
+perfectly. That is not a scoping mistake, it is how the shell is wired.
+
+**Two ways across that gap, in order of preference:**
+1. **`state.json`** - the desk writes a full snapshot to disk every 20 seconds:
+   account, positions, orders, **unprotected**, radar, config, plus `ts`. Any lane
+   that can read a file can read live state. Check `ts` against now; treat anything
+   older than `stale_after_s` as stale and say so rather than quoting it.
+2. **Chrome MCP** - runs on the machine, so it can hit the API when you need a live
+   call rather than a 20s-old snapshot.
+
+`state.json` is READ-ONLY state. Acting still goes through the API, and staging
+still ends with Dustin clicking Send.
+
+## How the lanes hand off (via files, not conversation)
+
+There is no shared memory between lanes. They coordinate through the same file
+buses the product is built on:
+
+- **`journal.jsonl`** - append a `note` when you learn something the next lane
+  needs ("skipped GTE, spread too wide"). This is the handoff channel.
+- **`memory.md`** - standing orders. Injected into EVERY bridge turn, so writing
+  here changes the copilot's behavior permanently.
+- **`panels/*.html`** - research output. The deep lane builds the board; the voice
+  lane talks over it.
+- **`state.json`** - what is true right now.
+
+Read the journal tail before answering anything that sounds like it continues an
+earlier thread. Another lane may have already handled it.
+
 ## Trading authority: STAGE, never SEND
 
 Dustin chose stage-and-confirm on 2026-08-06. When he asks for a trade:
@@ -114,6 +154,25 @@ state this app can be in.
    "assistant", "text": "..."}) to talk into the room - keep spoken lines to a
    sentence or two; put depth in panels. Don't double-answer things the bridge
    already handled (read the outbox tail first).
+
+## TradingView (optional lane, personal)
+
+Chrome runs TradingView with the DevTools protocol on :9222 (`run-tradingview.bat`).
+The desk can steer it, so you can too:
+
+- `POST /api/tv/open {symbol, interval}` - point the chart somewhere. Intervals:
+  `1m 5m 15m 30m 1h 4h 1d 1w` (or raw TV codes `1 5 60 240 D W M`).
+- `POST /api/tv/shot` - capture the chart to `tv-shots/tv-<ts>.png`, returned as
+  `web_path` you can drop straight into a panel (`<img src="/api/shot?name=...">`).
+- `GET /api/tv/status` - is the debug browser there, is TradingView open.
+
+**Why the screenshot matters:** it turns "what does this chart look like" into a
+FILE. The analyst lane can read that PNG and tell you what the structure says;
+you cannot see images, it can. Capture, then hand off via a journal note.
+
+Symbol and interval ride in the URL (public, stable). There is deliberately no
+drawing-tool or indicator control - that would mean reverse-engineering their
+internals and would break on every TradingView update.
 
 ## Memory + Journal (two more files you own)
 - **memory.md** = the user's standing orders (rendered in the 🧠 drawer; injected into

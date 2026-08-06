@@ -54,10 +54,35 @@ Read these before touching the order path.
   caused a 100x display bug already.
 - **Cash account.** No shorting, ever - there is no borrow. Options are not enabled.
 
-## Useful endpoints
+## Your shell cannot reach the desk. Read `state.json` instead.
+
+Your file tools write to the real folder, but your SHELL is a sandboxed Linux VM
+with no route to the host network - `curl localhost:8410` will fail. This is not a
+scoping error, it is how the shell is wired, and it will not change.
+
+**So: `state.json` in this folder is your live feed.** The desk rewrites it every
+20 seconds with account, positions, orders, `unprotected`, radar and config.
+Check its `ts` first; if it is older than `stale_after_s`, say the desk looks
+stopped rather than quoting numbers from it. That satisfies rule 3 and rule 6
+without a network call.
+
+If you need a genuinely live call rather than a 20s snapshot, use Chrome MCP - it
+runs on the machine and can hit the API.
+
+## Useful endpoints (for Chrome MCP, or to tell Dustin what to click)
 
 `/api/bot/status` `/positions` `/orders` `/radar` `/reddit` `/bars?symbol=&limit=`
 `/news?symbol=` `/config` `/unprotected` · `POST /api/bot/protect {symbol,trail_pct}`
+
+## You are the ANALYST lane, not the operator
+
+The in-app copilot has hands: it runs on the machine, hits the API natively, and
+stages tickets. You have depth: long context, pasted images and charts, multi-step
+research, and direct file access.
+
+So: **do the thinking, write it to disk, let the voice lane talk over it.** Build
+the panel. Append the `note` to `journal.jsonl`. Update `memory.md`. Do not try to
+be the operator - if something needs doing at the desk right now, say what to click.
 
 ## Tone
 
