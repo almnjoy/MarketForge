@@ -84,7 +84,10 @@ def copy_siblings():
     (DIST / "panels").mkdir(exist_ok=True)
     shutil.copy2(ROOT / "panels" / "00-welcome.html", DIST / "panels")
     print("  + panels/00-welcome.html")
-    for f in ("RULES.md", "CLAUDE.md"):
+    # run-tradingview.bat: tv.py is bundled in the exe (app.py imports it), so
+    # /api/tv/* are live endpoints whose error hint says to run this file -
+    # ship it or the hint points at nothing. No secrets in it.
+    for f in ("RULES.md", "CLAUDE.md", "run-tradingview.bat"):
         shutil.copy2(ROOT / f, DIST / f)
         print(f"  + {f}")
     (DIST / "config.json").write_text(DEFAULT_CONFIG, encoding="utf-8")
@@ -97,7 +100,8 @@ def verify():
         raise SystemExit(f"REFUSING TO SHIP - secrets/personal state in dist: {bad}")
     for must in ("MarketForge.exe", "static/index.html", "static/setup.html",
                  "bot/run_bot.py", "bot/src/api.py", "bot/.env.template",
-                 "panels/00-welcome.html", "RULES.md", "CLAUDE.md"):
+                 "panels/00-welcome.html", "RULES.md", "CLAUDE.md",
+                 "run-tradingview.bat"):
         if not (DIST / must).exists():
             raise SystemExit(f"dist is missing {must}")
     print("verified: no secrets, all required files present")

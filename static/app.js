@@ -58,10 +58,14 @@ function hookLinks(doc) {
     if (shellInfo.shell === 'browser') return;
     const a = e.target && e.target.closest && e.target.closest('a[href]');
     if (!a) return;
-    const href = a.href || '';
-    if (!/^https?:/i.test(href) || href.startsWith(location.origin)) return;
+    // Real URL parse, not a string prefix: "http://127.0.0.1:8410@evil.com"
+    // serializes with our origin as USERINFO and beats a startsWith check,
+    // and so does a port that merely extends ours (:84109).
+    let u;
+    try { u = new URL(a.href, location.href); } catch { return; }
+    if (!/^https?:$/.test(u.protocol) || u.origin === location.origin) return;
     e.preventDefault(); e.stopPropagation();
-    extOpen(href);
+    extOpen(u.href);
   }, true);
 }
 hookLinks(document);
@@ -569,6 +573,7 @@ function openSavedReader(board) {
     fr.src = `/api/saved/panel?board=${encodeURIComponent(board)}&name=${encodeURIComponent(f.name)}&v=${f.mtime}`;
     fr.onload = () => { try {
       fr.contentDocument.documentElement.dataset.theme = document.documentElement.dataset.theme;
+      hookLinks(fr.contentDocument);   // saved pages carry links too
     } catch {} };
     body.appendChild(fr);
   }
@@ -1016,17 +1021,24 @@ function recMime() {
   return '';
 }
 async function transcribe(blob) {
-  const r = await fetch('/api/stt', { method: 'POST',
-    headers: { 'Content-Type': (blob.type || 'audio/webm').split(';')[0] }, body: blob });
-  const d = await r.json().catch(() => ({}));
-  if (!d.ok) throw new Error(d.error || 'transcribe failed');
-  return (d.text || '').trim();
+  try {
+    const r = await fetch('/api/stt', { method: 'POST',
+      headers: { 'Content-Type': (blob.type || 'audio/webm').split(';')[0] }, body: blob });
+    const d = await r.json().catch(() => ({}));
+    if (!d.ok) throw new Error(d.error || 'transcribe failed');
+    return (d.text || '').trim();
+  } catch (e) {
+    sttOk = false;   // un-latch: next click re-probes health and can fall back to SR
+    throw e;
+  }
 }
 
 /* push-to-talk: click = record, click again = stop -> transcribe -> send */
-let pttRec = null;
+let pttRec = null, pttBusy = false;
 async function pttToggle() {
   if (pttRec) { pttRec.stop(); return; }
+  if (pttBusy) return;                            // getMic() still awaiting
+  pttBusy = true;
   try {
     const stream = await getMic();
     const chunks = [];
@@ -1036,6 +1048,7 @@ async function pttToggle() {
       $('#micBtn').classList.remove('rec');
       const blob = new Blob(chunks, { type: pttRec.mimeType || 'audio/webm' });
       pttRec = null;
+      if (!hotOn && !hotTick) dropMic();          // last consumer: mic light off
       if (blob.size < 2000) return;               // a click-click, not speech
       $('#chatInput').placeholder = 'transcribing...';
       try {
@@ -1047,16 +1060,25 @@ async function pttToggle() {
     };
     pttRec.start();
     $('#micBtn').classList.add('rec');
-  } catch (e) { pttRec = null; notify('mic: ' + e.message, 'err'); }
+  } catch (e) {
+    pttRec = null; notify('mic: ' + e.message, 'err');
+    if (!hotOn && !hotTick) dropMic();
+  } finally { pttBusy = false; }
 }
 
 /* hot mic: RMS voice-activity chunking. Record only while someone is talking,
    close the utterance after ~1.2s of silence, transcribe, send to the copilot.
    The recorder restarts per utterance because a mid-stream webm slice has no
    header and will not decode. */
-let hotOn = false, hotTick = null, hotCtx = null, hotRec2 = null, hotEcho = false;
+let hotOn = false, hotTick = null, hotCtx = null, hotRec2 = null, hotEcho = false,
+    hotWarned = false;
 async function hotStart() {
   const stream = await getMic();
+  if (!hotOn) {                                    // toggled off mid-await
+    if (!pttRec) dropMic();
+    return;
+  }
+  if (hotTick) clearInterval(hotTick);             // never two VAD loops
   hotCtx = new (window.AudioContext || window.webkitAudioContext)();
   const srcNode = hotCtx.createMediaStreamSource(stream);
   const an = hotCtx.createAnalyser(); an.fftSize = 2048;
@@ -1086,7 +1108,9 @@ async function hotStart() {
           if (text.length > 2)
             J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ text }) }).then(loadChat);
-        } catch {}                                  // hot mic fails quiet
+        } catch (e) {                               // fail quiet, but say it ONCE
+          if (!hotWarned) { hotWarned = true; notify('hot mic: transcription failing - is Voicebox up?', 'warn'); }
+        }
       };
       hotRec2.start();
     } else if (talking) {
@@ -1103,7 +1127,7 @@ function hotStop() {
   try { hotRec2?.stop(); } catch {}
   try { hotCtx?.close(); } catch {}
   hotCtx = null;
-  dropMic();
+  if (!pttRec) dropMic();   // PTT may still be mid-recording on the shared stream
 }
 
 /* --- engine 2: legacy SpeechRecognition (Chrome/Edge, needs Google) ------- */
@@ -1143,6 +1167,7 @@ async function hotToggle(next = !hotOn) {
   $('#hotMic').classList.toggle('on', hotOn);
   $('#hotMic').textContent = hotOn ? '🎙 hot mic ON' : '🎙 hot mic';
   if (!hotOn) { hotStop(); srHotStop(); return; }
+  hotWarned = false;
   try {
     if (hasRecorder && (sttOk || await sttHealth())) return await hotStart();
     if (SR) return srHotStart();

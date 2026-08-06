@@ -7,9 +7,9 @@ https://docs.madeformeai.com/marketforge/requirements
 
 | What | Why | Get it |
 |---|---|---|
-| **Python 3.10+** | Runs everything. The dashboard is pure standard library. | [python.org](https://python.org) - on Windows tick **Add Python to PATH** |
+| **Python 3.10+** | Runs everything. The dashboard is pure standard library. (Not needed for the `MarketForge.exe` desktop build - it carries its own.) | [python.org](https://python.org) - on Windows tick **Add Python to PATH** |
 | **git** | Install and update. | [git-scm.com](https://git-scm.com) |
-| **Flask** | The bot engine's web layer. The *only* pip package. | `pip install -r requirements.txt` |
+| **Flask + requests + tzdata** | The engine's web layer, its Alpaca client, and the timezone database Windows doesn't have (without it the ET scan schedule silently runs on local time). | `pip install -r requirements.txt` |
 | **Alpaca account** | Your broker + market data. **Paper keys** to start (fake money, real data). | [alpaca.markets](https://alpaca.markets) |
 
 No Docker. No database. No Node.js. No cloud account. Nothing phones home.
@@ -20,8 +20,8 @@ No Docker. No database. No Node.js. No cloud account. Nothing phones home.
 |---|---|---|
 | **AI coding agent** (Claude Code, Codex, ...) | The COPILOT tab: chat answers, live panel building, day replays, rule tuning | Without it the desk is still a full scanner + manual trading surface. Set the model in `config.json` (`bridge_model`); override the binary with `CLAUDE_BIN`. |
 | **Ollama** | Catalyst **scoring** (signal vs noise, 0-100 + why) | `ollama pull qwen2.5:3b`, then `RADAR_USE_LLM=true` in `bot/.env`. Any OpenAI-compatible endpoint works. Without it: alerts, no scores - and auto-entries need scores. |
-| **[Voicebox](https://voicebox.sh/)** (Kokoro voice) | A natural voice for spoken replies | Local TTS app. Point `voicebox_url` in `config.json` at it. Without it the browser voice speaks. |
-| **Chrome or Edge** | Voice **input** (push-to-talk + hot mic) | Browser speech recognition. Everything else works in any modern browser. |
+| **[Voicebox](https://voicebox.sh/)** (Kokoro voice) | A natural voice for spoken replies, AND offline voice **input** (push-to-talk + hot mic transcribe through its whisper models) | Local TTS/STT app. Point `voicebox_url` in `config.json` at it. Without it: browser voice out, and voice in needs Chrome/Edge. |
+| **Chrome or Edge** | Voice **input** fallback when Voicebox is absent | Browser speech recognition (needs Google). With Voicebox running, voice input works in any browser and in the desktop exe. |
 | **Chrome + a TradingView account** | Steering **TradingView** from the desk: change symbol and timeframe by voice, and capture the chart to a PNG an AI agent can read | Run `run-tradingview.bat`. It opens Chrome with the DevTools protocol on :9222 and its own profile - log in once. Without it, `/api/tv/*` just reports that no debug browser is running and nothing else is affected. |
 | **Discord webhook** | Radar alerts pushed to your phone | `RADAR_DISCORD_WEBHOOK` in `bot/.env`. |
 | **FRED API key** | Richer macro context in the Market Brief | Free from the St. Louis Fed. `FRED_API_KEY` in `bot/.env`. |
@@ -30,10 +30,10 @@ No Docker. No database. No Node.js. No cloud account. Nothing phones home.
 
 | You want... | You need |
 |---|---|
-| Radar, charts, manual trading | Python + Flask + Alpaca paper keys |
+| Radar, charts, manual trading | Python + `pip install -r requirements.txt` + Alpaca paper keys (or just `MarketForge.exe`) |
 | Scored signal-vs-noise catalysts | Ollama (or any OpenAI-compatible LLM) |
 | Copilot: chat, panels, replay | An AI coding agent |
-| Talking to the desk | Chrome or Edge |
+| Talking to the desk | Voicebox (any browser / the exe), or Chrome/Edge without it |
 | A natural voice back | Voicebox with a Kokoro profile |
 | Alerts on your phone | Discord webhook |
 | Auto-entries (paper or live) | Scoring on, then the flags in `bot/.env` |

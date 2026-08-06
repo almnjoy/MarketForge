@@ -139,7 +139,7 @@ input:focus { border-color: var(--primary); }
       </div>
       <div class="choice" style="flex-direction:row">
         <label style="flex:1"><input type="radio" name="env" value="paper" checked>Paper <span class="d" style="display:block">fake money, real data - start here</span></label>
-        <label style="flex:1"><input type="radio" name="env" value="live">Live <span class="d" style="display:block">real money; auto-trading still stays off</span></label>
+        <label style="flex:1"><input type="radio" name="env" value="live">Live <span class="d" style="display:block">real money; auto-trading stays off unless you turn it on</span></label>
       </div>
       <label class="f">key id</label>
       <input type="text" id="keyId" autocomplete="off" spellcheck="false">
@@ -176,8 +176,9 @@ input:focus { border-color: var(--primary); }
           <span class="d">hard-capped: $50 a trade, 2 a day, $150 total, trailing stop always armed</span></label>
       </div>
       <div class="confirm" id="autoConfirm">
-        <label><input type="checkbox" id="autoOk"> I understand the bot will place small
-        orders by itself inside those caps, and every entry carries a trailing stop.</label>
+        <label><input type="checkbox" id="autoOk"> <span id="autoConfirmTxt">I understand
+        the bot will place small orders by itself inside those caps, and every entry
+        carries a trailing stop.</span></label>
       </div>
       <div class="nav">
         <button class="btn ghost" onclick="go(2)">Back</button>
@@ -262,6 +263,13 @@ const POST = (url, body) => J(url, { method: 'POST',
 
 const STEPS = 7;
 let step = 0, feed = null, account = null, shellKind = 'browser';
+let stored = { paper: false, live: false };   // env has a usable saved key pair
+const keepable = () => stored[document.querySelector('input[name=env]:checked').value];
+function keyHints() {
+  const keep = keepable();
+  $('#keyId').placeholder = keep ? 'leave blank to keep your current keys' : '';
+  $('#keySec').placeholder = keep ? 'leave blank to keep your current keys' : '';
+}
 $('#dots').innerHTML = Array.from({ length: STEPS }, () => '<i></i>').join('');
 
 function go(n) {
@@ -284,7 +292,10 @@ async function validateKeys() {
   const env = document.querySelector('input[name=env]:checked').value;
   const key_id = $('#keyId').value.trim(), secret = $('#keySec').value.trim();
   const m = $('#keyMsg');
-  if (!key_id || !secret) { m.className = 'msg err'; m.textContent = 'both fields are required'; return; }
+  // both blank + a stored pair for this env = keep current (server substitutes)
+  if ((!key_id || !secret) && !(!key_id && !secret && keepable())) {
+    m.className = 'msg err'; m.textContent = 'both fields are required'; return;
+  }
   $('#keyGo').disabled = true; m.className = 'msg'; m.textContent = 'checking with Alpaca...';
   try {
     const r = await POST('/api/setup/validate-keys', { env, key_id, secret });
@@ -305,10 +316,18 @@ async function validateKeys() {
   } finally { $('#keyGo').disabled = false; }
 }
 
-/* auto mode needs a second explicit confirm */
-document.querySelectorAll('input[name=mode]').forEach(r => r.onchange = () => {
-  $('#autoConfirm').classList.toggle('show', r.value === 'auto' && r.checked);
-});
+/* auto mode needs a second explicit confirm - and on a LIVE account it says
+   REAL MONEY in so many words, exactly like the terminal wizard does */
+function syncAutoConfirm() {
+  const auto = document.querySelector('input[name=mode]:checked')?.value === 'auto';
+  const live = document.querySelector('input[name=env]:checked')?.value === 'live';
+  $('#autoConfirmTxt').textContent = live
+    ? 'This is REAL money. Both auto switches will be armed - the bot will place small live orders by itself inside those caps, every entry with a trailing stop. My choice.'
+    : 'I understand the bot will place small orders by itself inside those caps, and every entry carries a trailing stop.';
+  $('#autoConfirm').classList.toggle('show', auto);
+}
+document.querySelectorAll('input[name=mode]').forEach(r => r.onchange = syncAutoConfirm);
+document.querySelectorAll('input[name=env]').forEach(r => r.addEventListener('change', syncAutoConfirm));
 function modeNext() {
   const mode = document.querySelector('input[name=mode]:checked').value;
   if (mode === 'auto' && !$('#autoOk').checked) {
@@ -323,7 +342,11 @@ $('#useLlm').onchange = () => { $('#llmFields').style.display = $('#useLlm').che
 
 function copyPath() {
   const el = $('#rootPath'); el.select();
-  try { navigator.clipboard.writeText(el.value); } catch { document.execCommand('copy'); }
+  const fallback = () => { try { document.execCommand('copy'); } catch {} };
+  // writeText fails via a REJECTED PROMISE, which a try/catch never sees
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(el.value).catch(fallback);
+  else fallback();
 }
 
 function answers() {
@@ -370,7 +393,10 @@ async function save() {
   try {
     const st = await J('/api/setup/state');
     $('#rootPath').value = st.root || '';
+    stored = { paper: !!st.has_paper_keys, live: !!st.has_live_keys };
     if (st.stock_env === 'live') document.querySelector('input[name=env][value=live]').checked = true;
+    keyHints();
+    document.querySelectorAll('input[name=env]').forEach(r => r.addEventListener('change', keyHints));
     const mr = document.querySelector(`input[name=mode][value=${st.mode}]`);
     if (mr) { mr.checked = true; mr.onchange(); }
     if (st.use_llm) { $('#useLlm').checked = true; $('#useLlm').onchange(); }

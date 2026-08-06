@@ -182,6 +182,25 @@ ENGINE_KICK = threading.Event()
 ENGINE_STOP = threading.Event()
 
 
+def _setup_key_pair(envn: str, body: dict):
+    """The submitted key pair, or - when BOTH fields arrive empty - the pair
+    already stored for that env. Mirrors the terminal wizard's keep-current
+    defaults so re-running /setup does not force retyping a secret Alpaca only
+    ever showed once. One empty field is a typo, not intent: no substitution."""
+    key = str(body.get("key_id") or "").strip()
+    sec = str(body.get("secret") or "").strip()
+    if key or sec:
+        return key, sec
+    cur = setup_core.read_env()
+    if envn == "live":
+        k, s = cur.get("ALPACA_LIVE_KEY_ID", ""), cur.get("ALPACA_LIVE_SECRET_KEY", "")
+    else:
+        k, s = cur.get("ALPACA_KEY_ID", ""), cur.get("ALPACA_SECRET_KEY", "")
+    if k and s and not (k.startswith("YOUR_") or s.startswith("YOUR_")):
+        return k, s
+    return key, sec
+
+
 def stop_engine():
     """Deterministic engine kill for shutdown paths.
 
@@ -206,15 +225,6 @@ def _bot_supervisor():
     _kill_stale_engine()
     env_file = ROOT / "bot" / ".env"
     eng_log = None
-    if FROZEN:
-        # No console in a windowed build: give the engine a real stdout (its
-        # prints and Flask's request log land here) and a real stdin, or
-        # subprocess handle inheritance inside it gets WinError 6.
-        logs = ROOT / "logs"
-        logs.mkdir(exist_ok=True)
-        lp = logs / "engine.log"
-        mode = "w" if (lp.exists() and lp.stat().st_size > 5_000_000) else "a"
-        eng_log = open(lp, mode, buffering=1, encoding="utf-8", errors="replace")
     backoff = 3
     while not ENGINE_STOP.is_set():
         if not env_file.exists():
@@ -226,6 +236,21 @@ def _bot_supervisor():
                     return
                 time.sleep(2)
             print("[embedded bot] bot/.env appeared - starting the engine")
+        if FROZEN:
+            # No console in a windowed build: give the engine a real stdout
+            # (its prints + Flask's per-request log land here) and a real
+            # stdin, or subprocess handle inheritance inside it gets WinError
+            # 6. (Re)opened PER SPAWN so the >5MB rotation actually happens on
+            # a desk left running for days, not only at launch.
+            try:
+                eng_log and eng_log.close()
+            except Exception:
+                pass
+            logs = ROOT / "logs"
+            logs.mkdir(exist_ok=True)
+            lp = logs / "engine.log"
+            mode = "w" if (lp.exists() and lp.stat().st_size > 5_000_000) else "a"
+            eng_log = open(lp, mode, buffering=1, encoding="utf-8", errors="replace")
         kw = dict(stdin=subprocess.DEVNULL, stdout=eng_log,
                   stderr=subprocess.STDOUT) if eng_log else {}
         proc = subprocess.Popen([sys.executable, str(ROOT / "bot" / "run_bot.py")],
@@ -1162,8 +1187,7 @@ class Handler(BaseHTTPRequestHandler):
             # Wrong-keys-typed-in is the most likely failure and it must not
             # surface 20 minutes later as an empty dashboard.
             envn = str(body.get("env") or "paper").lower()
-            key = str(body.get("key_id") or "").strip()
-            sec = str(body.get("secret") or "").strip()
+            key, sec = _setup_key_pair(envn, body)
             acct, err = setup_core.check_keys(envn, key, sec)
             if not acct:
                 return self._json({"ok": False, "error": err})
@@ -1175,11 +1199,36 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/setup/save":
             envn = str(body.get("env") or "paper").lower()
-            key = str(body.get("key_id") or "").strip()
-            sec = str(body.get("secret") or "").strip()
+            key, sec = _setup_key_pair(envn, body)
             mode = str(body.get("mode") or "research").lower()
             if envn not in ("paper", "live") or mode not in ("research", "manual", "auto"):
                 return self._json({"ok": False, "error": "bad env or mode"}, 400)
+            # THE EXIT-GUARANTEE GUARD. Saving kills the engine to apply the
+            # new env - but a kill landing inside the order path's fill-poll
+            # window (up to ~18s after a BUY submits, before the disk-backed
+            # protect row exists) would leave a filled entry with NO exit and
+            # no record of the intended trail. That is the VRM failure class.
+            # So: if the broker shows a working BUY, refuse and let the user
+            # retry after the fill instead of killing at an arbitrary instant.
+            if EMBEDDED and BOT_PID.exists():
+                try:
+                    pid = int(BOT_PID.read_text().strip() or 0)
+                except Exception:
+                    pid = 0
+                if pid and _pid_alive(pid):
+                    try:
+                        raw, code = _bot_get("broker/orders?status=open", timeout=8)
+                        orders = json.loads(raw) if code == 200 else []
+                        buys = [o for o in orders if isinstance(o, dict)
+                                and str(o.get("side", "")).lower() == "buy"] \
+                            if isinstance(orders, list) else []
+                        if buys:
+                            return self._json({"ok": False, "error":
+                                f"engine is mid-order ({buys[0].get('symbol', '?')} buy "
+                                "still working at the broker) - wait for the fill, "
+                                "then save again"}, 409)
+                    except Exception:
+                        pass   # engine unreachable = no in-flight poll to race
             # Never write junk: re-validate server-side even if the UI already
             # did. One extra account call is cheap; a broken .env is not.
             acct, err = setup_core.check_keys(envn, key, sec)

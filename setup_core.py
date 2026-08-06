@@ -47,7 +47,9 @@ def read_env() -> dict:
                 val = m.group(2)
                 if " #" in val:
                     val = val.split(" #", 1)[0]
-                cur[m.group(1)] = val.strip()
+                # quote handling mirrors the engine's _load_dotenv exactly, or
+                # a hand-quoted STOCK_ENV="live" reads differently here vs there
+                cur[m.group(1)] = val.strip().strip('"').strip("'")
     return cur
 
 
@@ -92,8 +94,10 @@ def detect_feed(key: str, sec: str):
     try:
         _api(DATA, "/v2/stocks/AAPL/trades/latest?feed=sip", key, sec, timeout=12)
         return "sip"
-    except urllib.error.HTTPError:
-        return "iex"
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return "iex"   # the entitlement answer: no real-time add-on
+        return None        # 429/5xx: we could not CHECK - say so, don't guess
     except Exception:
         return None
 
@@ -132,14 +136,15 @@ def first_run_state() -> dict:
     env_exists = ENV.exists()
     cur = read_env() if env_exists else {}
     stock_env = (cur.get("STOCK_ENV") or "paper").lower()
-    if stock_env == "live":
-        has_keys = not (_placeholder(cur.get("ALPACA_LIVE_KEY_ID", ""))
-                        or _placeholder(cur.get("ALPACA_LIVE_SECRET_KEY", "")))
-    else:
-        has_keys = not (_placeholder(cur.get("ALPACA_KEY_ID", ""))
-                        or _placeholder(cur.get("ALPACA_SECRET_KEY", "")))
+    has_paper = env_exists and not (_placeholder(cur.get("ALPACA_KEY_ID", ""))
+                                    or _placeholder(cur.get("ALPACA_SECRET_KEY", "")))
+    has_live = env_exists and not (_placeholder(cur.get("ALPACA_LIVE_KEY_ID", ""))
+                                   or _placeholder(cur.get("ALPACA_LIVE_SECRET_KEY", "")))
+    has_keys = has_live if stock_env == "live" else has_paper
     return {
         "first_run": not (env_exists and has_keys),
+        "has_paper_keys": has_paper,
+        "has_live_keys": has_live,
         "env_exists": env_exists,
         "stock_env": stock_env,
         "has_keys": env_exists and has_keys,
@@ -163,7 +168,10 @@ def apply_answers(cur: dict, *, env_name: str, key: str, sec: str, feed,
     cur["STOCK_ENV"] = env_name
     if feed == "sip":
         cur["ALPACA_DATA_FEED"] = "sip"
-        cur.setdefault("MIN_DOLLAR_VOLUME", "20000000")
+        # the engine's knob is MIN_AVG_DOLLAR_VOLUME (config.py); both wizards
+        # used to write MIN_DOLLAR_VOLUME, a key nothing reads
+        cur.pop("MIN_DOLLAR_VOLUME", None)
+        cur.setdefault("MIN_AVG_DOLLAR_VOLUME", "20000000")
     elif feed == "iex":
         cur["ALPACA_DATA_FEED"] = "iex"
     else:
