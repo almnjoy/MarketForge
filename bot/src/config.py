@@ -165,9 +165,15 @@ RADAR_TRAIL_PCT = float(_get("RADAR_TRAIL_PCT", 0.10))        # suggested traili
 RADAR_DISCORD_WEBHOOK = _get("RADAR_DISCORD_WEBHOOK", "") or ""
 
 # LLM curation of radar alerts (triage real catalyst vs noise; never predicts).
-# Defaults to the homelab Ollama on llmhub (free, private). Swap RADAR_LLM_BASE_URL
-# to OpenRouter/etc. to use a bigger model.
 RADAR_USE_LLM = (_get("RADAR_USE_LLM", "true") or "true").lower() == "true"
+# Provider: "auto" (default) scores through the LOCAL CODING-AGENT CLI when one
+# is on PATH - the same optional dependency that powers the copilot seat, so
+# scoring costs no extra install (no Ollama) - and falls back to the
+# OpenAI-compatible endpoint below when no agent exists. "agent" / "openai"
+# pin one explicitly.
+RADAR_LLM_PROVIDER = (_get("RADAR_LLM_PROVIDER", "auto") or "auto").lower()
+RADAR_AGENT_MODEL = _get("RADAR_AGENT_MODEL", "haiku") or "haiku"
+RADAR_AGENT_TIMEOUT = float(_get("RADAR_AGENT_TIMEOUT", 90))
 RADAR_LLM_BASE_URL = _get("RADAR_LLM_BASE_URL", "http://127.0.0.1:11434/v1") or ""
 RADAR_LLM_MODEL = _get("RADAR_LLM_MODEL", "qwen2.5:3b-16k") or ""
 

@@ -18,8 +18,7 @@ No Docker. No database. No Node.js. No cloud account. Nothing phones home.
 
 | What | Unlocks | Notes |
 |---|---|---|
-| **AI coding agent** (Claude Code, Codex, ...) | The COPILOT tab: chat answers, live panel building, day replays, rule tuning | Without it the desk is still a full scanner + manual trading surface. Set the model in `config.json` (`bridge_model`); override the binary with `CLAUDE_BIN`. |
-| **Ollama** | Catalyst **scoring** (signal vs noise, 0-100 + why) | `ollama pull qwen2.5:3b`, then `RADAR_USE_LLM=true` in `bot/.env`. Any OpenAI-compatible endpoint works. Without it: alerts, no scores - and auto-entries need scores. |
+| **AI coding agent** (Claude Code, Codex, ...) | The COPILOT tab (chat answers, live panel building, day replays, rule tuning) AND catalyst **scoring** (signal vs noise, 0-100 + why) | Without it the desk is still a full scanner + manual trading surface - alerts, no scores, and auto-entries need scores. Set the copilot model in `config.json` (`bridge_model`), the scoring model with `RADAR_AGENT_MODEL` in `bot/.env` (default haiku); override the binary with `CLAUDE_BIN`. Prefer an OpenAI-compatible endpoint (Ollama, OpenRouter) instead? `RADAR_LLM_PROVIDER=openai` + `RADAR_LLM_BASE_URL`. |
 | **[Voicebox](https://voicebox.sh/)** (Kokoro voice) | A natural voice for spoken replies, AND offline voice **input** (push-to-talk + hot mic transcribe through its whisper models) | Local TTS/STT app. Point `voicebox_url` in `config.json` at it. Without it: browser voice out, and voice in needs Chrome/Edge. |
 | **Chrome or Edge** | Voice **input** fallback when Voicebox is absent | Browser speech recognition (needs Google). With Voicebox running, voice input works in any browser and in the desktop exe. |
 | **Chrome + a TradingView account** | Steering **TradingView** from the desk: change symbol and timeframe by voice, and capture the chart to a PNG an AI agent can read | Run `run-tradingview.bat`. It opens Chrome with the DevTools protocol on :9222 and its own profile - log in once. Without it, `/api/tv/*` just reports that no debug browser is running and nothing else is affected. |
@@ -31,7 +30,7 @@ No Docker. No database. No Node.js. No cloud account. Nothing phones home.
 | You want... | You need |
 |---|---|
 | Radar, charts, manual trading | Python + `pip install -r requirements.txt` + Alpaca paper keys (or just `MarketForge.exe`) |
-| Scored signal-vs-noise catalysts | Ollama (or any OpenAI-compatible LLM) |
+| Scored signal-vs-noise catalysts | your AI coding agent (or any OpenAI-compatible LLM via `RADAR_LLM_PROVIDER=openai`) |
 | Copilot: chat, panels, replay | An AI coding agent |
 | Talking to the desk | Voicebox (any browser / the exe), or Chrome/Edge without it |
 | A natural voice back | Voicebox with a Kokoro profile |
@@ -42,6 +41,6 @@ No Docker. No database. No Node.js. No cloud account. Nothing phones home.
 
 - **Windows / macOS / Linux** all supported. Windows gets `run-portable.bat`; elsewhere
   run `MF_EMBEDDED=1 python app.py`.
-- **Footprint:** a few hundred KB of code. Ollama's 3B model is ~2 GB if you use it.
+- **Footprint:** a few hundred KB of code. Everything heavier is optional.
 - **Scans run while the app is open** (10am / noon / 2pm / 4pm ET weekdays). It is a
   desk tool, not a headless server.

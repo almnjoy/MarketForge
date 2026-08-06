@@ -934,6 +934,7 @@ window.stopAll = async () => {
 $('#stopBtn').onclick = window.stopAll;
 
 let speakingNow = false;  // echo guard: hot mic ignores itself while the copilot talks
+let noVoiceWarned = false;
 async function speakText(text) {
   if (!text) return;
   if (vbOk) {
@@ -945,17 +946,31 @@ async function speakText(text) {
         audioEl = new Audio(URL.createObjectURL(blob));
         speakingNow = true;
         audioEl.onended = audioEl.onerror = () => { setTimeout(() => { speakingNow = false; }, 400); };
-        audioEl.play();
+        // play() fails via a REJECTED PROMISE (autoplay policy, device gone) -
+        // unhandled, that was a desk that just silently never spoke
+        audioEl.play().catch((e) => {
+          speakingNow = false;
+          notify(`voice: playback blocked (${e.name || e.message})`, 'warn');
+        });
         return;
       }
     } catch { /* fall through to browser voice */ }
     vbHealth();
   }
-  if ('speechSynthesis' in window) {
+  // gate on a real browser: WebView2 may EXPOSE speechSynthesis yet render
+  // nothing, which reads as "voice randomly broken" instead of an honest miss
+  if ('speechSynthesis' in window && shellInfo.shell === 'browser') {
     const u = new SpeechSynthesisUtterance(text.slice(0, 600)); u.rate = 1.05;
     speakingNow = true;
     u.onend = u.onerror = () => { setTimeout(() => { speakingNow = false; }, 400); };
     speechSynthesis.speak(u);
+    return;
+  }
+  // WebView2 has NO Web Speech API: inside a shell with Voicebox down there is
+  // no voice at all - say so once instead of being silently mute.
+  if (!noVoiceWarned) {
+    noVoiceWarned = true;
+    notify('voice: Voicebox unreachable and this window has no built-in voice', 'warn');
   }
 }
 async function sendChat() {
@@ -1003,7 +1018,14 @@ async function sttHealth() {
   return sttOk;
 }
 
-/* --- engine 1: MediaRecorder + /api/stt ---------------------------------- */
+/* --- engine 1: raw-PCM WAV capture + /api/stt -----------------------------
+   Why WAV and not MediaRecorder: MediaRecorder's container is engine roulette
+   (webm/opus in Chrome and WebView2, mp4 elsewhere) and Voicebox /transcribe
+   500s on webm - reproduced 2026-08-06, and exactly the error the first exe
+   test hit. Whisper's home format is plain PCM WAV, so we tap the raw samples
+   with a ScriptProcessor and build the WAV ourselves. Works identically in
+   every engine; bonus: the hot mic gets a real pre-roll (no clipped first
+   syllable, which the restart-a-recorder approach could never fix). */
 let micStream = null;
 async function getMic() {
   if (micStream && micStream.active) return micStream;
@@ -1015,15 +1037,47 @@ function dropMic() {
   try { micStream?.getTracks().forEach(t => t.stop()); } catch {}
   micStream = null;
 }
-function recMime() {
-  for (const m of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'])
-    if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
-  return '';
+function wavEncode(chunks, sampleRate) {
+  let n = 0;
+  for (const c of chunks) n += c.length;
+  const pcm = new Int16Array(n);
+  let o = 0;
+  for (const c of chunks)
+    for (let i = 0; i < c.length; i++) {
+      const s = Math.max(-1, Math.min(1, c[i]));
+      pcm[o++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+  const buf = new ArrayBuffer(44 + pcm.length * 2);
+  const v = new DataView(buf);
+  const tag = (off, str) => { for (let i = 0; i < str.length; i++) v.setUint8(off + i, str.charCodeAt(i)); };
+  tag(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); tag(8, 'WAVE');
+  tag(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true); v.setUint32(24, sampleRate, true);
+  v.setUint32(28, sampleRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  tag(36, 'data'); v.setUint32(40, pcm.length * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  return new Blob([buf], { type: 'audio/wav' });
+}
+function startWav(stream) {
+  // ScriptProcessor is deprecated-but-everywhere (incl. WebView2); AudioWorklet
+  // needs a module file and buys nothing for a local app.
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const rec = { ctx, chunks: [], rate: ctx.sampleRate };
+  rec.proc = ctx.createScriptProcessor(4096, 1, 1);
+  rec.proc.onaudioprocess = (e) => rec.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  ctx.createMediaStreamSource(stream).connect(rec.proc);
+  rec.proc.connect(ctx.destination);   // unconnected processors never pump
+  return rec;
+}
+function stopWav(rec) {
+  try { rec.proc.disconnect(); } catch {}
+  try { rec.ctx.close(); } catch {}
+  return wavEncode(rec.chunks, rec.rate);
 }
 async function transcribe(blob) {
   try {
     const r = await fetch('/api/stt', { method: 'POST',
-      headers: { 'Content-Type': (blob.type || 'audio/webm').split(';')[0] }, body: blob });
+      headers: { 'Content-Type': 'audio/wav' }, body: blob });
     const d = await r.json().catch(() => ({}));
     if (!d.ok) throw new Error(d.error || 'transcribe failed');
     return (d.text || '').trim();
@@ -1034,100 +1088,92 @@ async function transcribe(blob) {
 }
 
 /* push-to-talk: click = record, click again = stop -> transcribe -> send */
-let pttRec = null, pttBusy = false;
+let ptt = null, pttBusy = false;
 async function pttToggle() {
-  if (pttRec) { pttRec.stop(); return; }
+  if (ptt) {
+    const rec = ptt; ptt = null;
+    $('#micBtn').classList.remove('rec');
+    const blob = stopWav(rec);
+    if (!hotOn && !hotProc) dropMic();            // last consumer: mic light off
+    if (rec.chunks.length * 4096 / rec.rate < 0.35) return;   // click-click, not speech
+    $('#chatInput').placeholder = 'transcribing...';
+    try {
+      const text = await transcribe(blob);
+      $('#chatInput').value = text;
+      if (text) sendChat();
+    } catch (e) { notify('voice: ' + e.message, 'err'); }
+    $('#chatInput').placeholder = 'Ask anything about the market, or tell me what to build...';
+    return;
+  }
   if (pttBusy) return;                            // getMic() still awaiting
   pttBusy = true;
   try {
     const stream = await getMic();
-    const chunks = [];
-    pttRec = new MediaRecorder(stream, recMime() ? { mimeType: recMime() } : {});
-    pttRec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-    pttRec.onstop = async () => {
-      $('#micBtn').classList.remove('rec');
-      const blob = new Blob(chunks, { type: pttRec.mimeType || 'audio/webm' });
-      pttRec = null;
-      if (!hotOn && !hotTick) dropMic();          // last consumer: mic light off
-      if (blob.size < 2000) return;               // a click-click, not speech
-      $('#chatInput').placeholder = 'transcribing...';
-      try {
-        const text = await transcribe(blob);
-        $('#chatInput').value = text;
-        if (text) sendChat();
-      } catch (e) { notify('voice: ' + e.message, 'err'); }
-      $('#chatInput').placeholder = 'Ask anything about the market, or tell me what to build...';
-    };
-    pttRec.start();
+    ptt = startWav(stream);
     $('#micBtn').classList.add('rec');
   } catch (e) {
-    pttRec = null; notify('mic: ' + e.message, 'err');
-    if (!hotOn && !hotTick) dropMic();
+    ptt = null; notify('mic: ' + e.message, 'err');
+    if (!hotOn && !hotProc) dropMic();
   } finally { pttBusy = false; }
 }
 
-/* hot mic: RMS voice-activity chunking. Record only while someone is talking,
-   close the utterance after ~1.2s of silence, transcribe, send to the copilot.
-   The recorder restarts per utterance because a mid-stream webm slice has no
-   header and will not decode. */
-let hotOn = false, hotTick = null, hotCtx = null, hotRec2 = null, hotEcho = false,
-    hotWarned = false;
+/* hot mic: voice-activity chunking on the same sample tap. A ring buffer keeps
+   ~350ms of pre-roll so the first syllable survives; ~1.2s of silence closes
+   the utterance; anything heard while the copilot is speaking is discarded. */
+let hotOn = false, hotProc = null, hotCtx = null, hotWarned = false;
 async function hotStart() {
   const stream = await getMic();
   if (!hotOn) {                                    // toggled off mid-await
-    if (!pttRec) dropMic();
+    if (!ptt) dropMic();
     return;
   }
-  if (hotTick) clearInterval(hotTick);             // never two VAD loops
+  if (hotProc) { try { hotProc.disconnect(); } catch {} }   // never two VAD taps
   hotCtx = new (window.AudioContext || window.webkitAudioContext)();
-  const srcNode = hotCtx.createMediaStreamSource(stream);
-  const an = hotCtx.createAnalyser(); an.fftSize = 2048;
-  srcNode.connect(an);
-  const buf = new Float32Array(an.fftSize);
-  const THRESH = 0.015, SILENCE_MS = 1200, MIN_MS = 450;
-  let talking = false, lastVoice = 0, started = 0, chunks = [];
-  hotTick = setInterval(() => {
+  const rate = hotCtx.sampleRate;
+  const THRESH = 0.015, SILENCE_MS = 1200, MIN_MS = 450, MAX_MS = 25000, PRE = 4;
+  let ring = [], talking = false, buf = [], lastVoice = 0, started = 0, echo = false;
+  hotProc = hotCtx.createScriptProcessor(4096, 1, 1);
+  hotProc.onaudioprocess = (e) => {
     if (!hotOn) return;
-    an.getFloatTimeDomainData(buf);
+    const data = new Float32Array(e.inputBuffer.getChannelData(0));
     let sum = 0;
-    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
-    const rms = Math.sqrt(sum / buf.length), now = performance.now();
-    if (rms > THRESH) lastVoice = now;
-    if (!talking && rms > THRESH) {
-      if (speakingNow) return;                     // that's our own voice
-      talking = true; started = now; chunks = []; hotEcho = false;
-      hotRec2 = new MediaRecorder(stream, recMime() ? { mimeType: recMime() } : {});
-      hotRec2.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-      hotRec2.onstop = async () => {
-        const blob = new Blob(chunks, { type: hotRec2?.mimeType || 'audio/webm' });
-        const ms = performance.now() - started;   // not the tick's `now` - that
-        hotRec2 = null;                           // is frozen at utterance start
-        if (hotEcho || ms < MIN_MS || blob.size < 2000) return;
-        try {
-          const text = await transcribe(blob);
-          if (text.length > 2)
-            J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ text }) }).then(loadChat);
-        } catch (e) {                               // fail quiet, but say it ONCE
-          if (!hotWarned) { hotWarned = true; notify('hot mic: transcription failing - is Voicebox up?', 'warn'); }
-        }
-      };
-      hotRec2.start();
-    } else if (talking) {
-      if (speakingNow) hotEcho = true;             // TTS lit up mid-utterance
-      if (now - lastVoice > SILENCE_MS) {
-        talking = false;
-        try { hotRec2?.stop(); } catch {}
+    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+    const rms = Math.sqrt(sum / data.length), now = performance.now();
+    if (!talking) {
+      ring.push(data);
+      if (ring.length > PRE) ring.shift();
+      if (rms > THRESH && !speakingNow) {
+        talking = true; echo = false; started = now; lastVoice = now;
+        buf = ring.slice(); ring = [];             // pre-roll seeds the utterance
       }
+      return;
     }
-  }, 90);
+    buf.push(data);
+    if (rms > THRESH) lastVoice = now;
+    if (speakingNow) echo = true;                  // TTS lit up mid-utterance
+    if (now - lastVoice > SILENCE_MS || now - started > MAX_MS) {
+      talking = false;
+      const utter = buf, ms = now - started;
+      buf = [];
+      if (echo || ms < MIN_MS) return;
+      transcribe(wavEncode(utter, rate)).then((text) => {
+        if (text.length > 2)
+          J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }) }).then(loadChat);
+      }).catch(() => {                             // fail quiet, but say it ONCE
+        if (!hotWarned) { hotWarned = true; notify('hot mic: transcription failing - is Voicebox up?', 'warn'); }
+      });
+    }
+  };
+  hotCtx.createMediaStreamSource(stream).connect(hotProc);
+  hotProc.connect(hotCtx.destination);
 }
 function hotStop() {
-  clearInterval(hotTick); hotTick = null;
-  try { hotRec2?.stop(); } catch {}
+  try { hotProc?.disconnect(); } catch {}
+  hotProc = null;
   try { hotCtx?.close(); } catch {}
   hotCtx = null;
-  if (!pttRec) dropMic();   // PTT may still be mid-recording on the shared stream
+  if (!ptt) dropMic();   // PTT may still be mid-recording on the shared stream
 }
 
 /* --- engine 2: legacy SpeechRecognition (Chrome/Edge, needs Google) ------- */
@@ -1155,10 +1201,11 @@ function srHotStart() {
 function srHotStop() { try { srHot?.stop(); } catch {} srHot = null; }
 
 /* --- wiring: pick an engine at click time -------------------------------- */
-const hasRecorder = !!(navigator.mediaDevices && window.MediaRecorder);
+const hasAudio = !!(navigator.mediaDevices
+  && (window.AudioContext || window.webkitAudioContext));
 $('#micBtn').onclick = async () => {
-  if (pttRec || srPtt) { pttRec ? pttRec.stop() : srPtt.stop(); return; }
-  if (hasRecorder && (sttOk || await sttHealth())) return pttToggle();
+  if (ptt || srPtt) { ptt ? pttToggle() : srPtt.stop(); return; }
+  if (hasAudio && (sttOk || await sttHealth())) return pttToggle();
   if (SR) return srPttToggle();
   notify('voice input needs Voicebox running, or Chrome/Edge', 'warn');
 };
@@ -1169,7 +1216,7 @@ async function hotToggle(next = !hotOn) {
   if (!hotOn) { hotStop(); srHotStop(); return; }
   hotWarned = false;
   try {
-    if (hasRecorder && (sttOk || await sttHealth())) return await hotStart();
+    if (hasAudio && (sttOk || await sttHealth())) return await hotStart();
     if (SR) return srHotStart();
     notify('voice input needs Voicebox running, or Chrome/Edge', 'warn');
     hotToggle(false);
@@ -1177,7 +1224,7 @@ async function hotToggle(next = !hotOn) {
 }
 $('#hotMic').onclick = () => hotToggle();
 sttHealth().then(() => {
-  if (!sttOk && !SR && !hasRecorder) {
+  if (!sttOk && !SR && !hasAudio) {
     $('#micBtn').title = 'voice needs Voicebox, or Chrome/Edge';
     $('#micBtn').disabled = true; $('#hotMic').disabled = true;
   }

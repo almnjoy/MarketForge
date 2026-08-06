@@ -192,23 +192,16 @@ input:focus { border-color: var(--primary); }
       <p>Each unlocks one feature. All of them can be added later - skipping is fine.</p>
       <div class="extras">
         <div class="extra">
-          <div class="h"><i class="dot" id="dotOllama"></i>Catalyst scoring (Ollama)
-            <label style="margin-left:auto;font-weight:400"><input type="checkbox" id="useLlm"> enable</label></div>
-          <div class="d">An LLM labels each mover signal-or-noise, 0-100. Install Ollama, then
-            <span class="mono">ollama pull qwen2.5:3b</span>. Auto-entries need scores.</div>
-          <div id="llmFields" style="display:none">
-            <label class="f">llm base url</label><input type="url" id="llmBase" value="http://127.0.0.1:11434/v1">
-            <label class="f">model</label><input type="text" id="llmModel" value="qwen2.5:3b">
-          </div>
+          <div class="h"><i class="dot" id="dotClaude"></i>AI copilot (claude on PATH)</div>
+          <div class="d">Powers the COPILOT tab (chat answers, live panel building, day
+            replays) AND scores radar catalysts signal-or-noise, 0-100 - no extra
+            install. Without it the desk still alerts, just without scores, and
+            auto-entries need scores.</div>
         </div>
         <div class="extra">
           <div class="h"><i class="dot" id="dotVoicebox"></i>Voicebox</div>
           <div class="d">A natural local voice for spoken replies, and offline voice input.
             Without it: browser voice out, Chrome-only voice in.</div>
-        </div>
-        <div class="extra">
-          <div class="h"><i class="dot" id="dotClaude"></i>AI copilot (claude on PATH)</div>
-          <div class="d">Powers the COPILOT tab: chat answers, live panel building, day replays.</div>
         </div>
         <div class="extra">
           <div class="h"><i class="dot"></i>Discord alerts</div>
@@ -262,7 +255,7 @@ const POST = (url, body) => J(url, { method: 'POST',
   headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
 const STEPS = 7;
-let step = 0, feed = null, account = null, shellKind = 'browser';
+let step = 0, feed = null, account = null, shellKind = 'browser', claudeUp = false;
 let stored = { paper: false, live: false };   // env has a usable saved key pair
 const keepable = () => stored[document.querySelector('input[name=env]:checked').value];
 function keyHints() {
@@ -338,8 +331,6 @@ function modeNext() {
   go(4);
 }
 
-$('#useLlm').onchange = () => { $('#llmFields').style.display = $('#useLlm').checked ? 'block' : 'none'; };
-
 function copyPath() {
   const el = $('#rootPath'); el.select();
   const fallback = () => { try { document.execCommand('copy'); } catch {} };
@@ -356,9 +347,6 @@ function answers() {
     secret: $('#keySec').value.trim(),
     mode: document.querySelector('input[name=mode]:checked').value,
     feed,
-    use_llm: $('#useLlm').checked,
-    llm_base: $('#llmBase').value.trim(),
-    llm_model: $('#llmModel').value.trim(),
     webhook: $('#webhook').value.trim(),
   };
 }
@@ -369,7 +357,7 @@ function fillSummary() {
     ['Account', a.env.toUpperCase()],
     ['Data feed', (feed || 'iex').toUpperCase() + (feed === 'sip' ? ' (real-time)' : ' (free)')],
     ['Mode', a.mode],
-    ['Scoring', a.use_llm ? a.llm_model : 'off (alerts, no scores)'],
+    ['Scoring', claudeUp ? 'via your coding agent' : 'agent not found - alerts without scores'],
     ['Alerts', a.webhook ? 'Discord webhook' : 'off'],
   ].map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
 }
@@ -399,15 +387,12 @@ async function save() {
     document.querySelectorAll('input[name=env]').forEach(r => r.addEventListener('change', keyHints));
     const mr = document.querySelector(`input[name=mode][value=${st.mode}]`);
     if (mr) { mr.checked = true; mr.onchange(); }
-    if (st.use_llm) { $('#useLlm').checked = true; $('#useLlm').onchange(); }
-    if (st.llm_base) $('#llmBase').value = st.llm_base;
-    if (st.llm_model) $('#llmModel').value = st.llm_model;
   } catch {}
   try {
     const p = await J('/api/setup/probe-extras');
-    $('#dotOllama').classList.toggle('up', !!p.ollama);
+    claudeUp = !!p.claude;
     $('#dotVoicebox').classList.toggle('up', !!p.voicebox);
-    $('#dotClaude').classList.toggle('up', !!p.claude);
+    $('#dotClaude').classList.toggle('up', claudeUp);
   } catch {}
 })();
 </script>

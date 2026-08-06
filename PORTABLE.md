@@ -23,8 +23,8 @@ still applies - same folder, same files, same knobs. Build it yourself with
 4. Optional but worth it:
    - **Claude Code CLI** (or another coding agent) logged in -> the COPILOT tab
      comes alive: chat/voice answers, panel building, day replays.
-   - **Ollama** (`ollama pull qwen2.5:3b`) -> flip `RADAR_USE_LLM=true` and the
-     radar scores catalysts signal-vs-noise instead of alert-only.
+   - With the agent installed the radar also SCORES catalysts signal-vs-noise
+     (0-100) - no Ollama, no extra install. Model knob: `RADAR_AGENT_MODEL`.
    - **[Voicebox](https://voicebox.sh/)** with a Kokoro voice -> spoken replies (browser voice otherwise).
 
 ## Make it YOURS

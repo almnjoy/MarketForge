@@ -132,24 +132,14 @@ def main():
         if mode_env == "live":
             warn("this is REAL money. Both switches must be on, and they are - by your choice.")
 
-    head("5. Catalyst scoring (optional)")
-    dim("An LLM labels each mover signal or noise with a 0-100 score and a reason.")
-    dim("Easiest free option: install Ollama, then `ollama pull qwen2.5:3b`.")
-    use_llm = input("  enable scoring? [y/N]: ").strip().lower() == "y"
-    llm_base = llm_model = ""
-    if use_llm:
-        llm_base = ask("LLM base url", cur.get("RADAR_LLM_BASE_URL") or "http://127.0.0.1:11434/v1")
-        llm_model = ask("model", cur.get("RADAR_LLM_MODEL") or "qwen2.5:3b")
-    else:
-        dim("rules-only: you still get alerts, just no scores (and no auto entries)")
-
-    head("6. Alerts (optional)")
+    head("5. Alerts (optional)")
     dim("A Discord webhook pushes scored catalysts to your phone. Enter to skip.")
+    dim("(Catalyst scoring is automatic: it uses your coding-agent CLI when one is")
+    dim("installed - no Ollama, no extra setup. No agent = alerts without scores.)")
     hook = input("  webhook url: ").strip()
 
     setup_core.apply_answers(cur, env_name=mode_env, key=key, sec=sec, feed=feed,
-                             mode=use, use_llm=use_llm, llm_base=llm_base,
-                             llm_model=llm_model, webhook=hook)
+                             mode=use, webhook=hook)
     setup_core.write_env(cur)
 
     head("Done")

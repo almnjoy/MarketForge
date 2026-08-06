@@ -889,7 +889,6 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     return False
             return self._json({
-                "ollama": _up("http://127.0.0.1:11434/api/version"),
                 "voicebox": _up(f"{VOICEBOX}/health"),
                 "claude": bool(_resolve_claude()),
             })
@@ -1238,9 +1237,6 @@ class Handler(BaseHTTPRequestHandler):
             cur = setup_core.read_env()
             setup_core.apply_answers(
                 cur, env_name=envn, key=key, sec=sec, feed=feed, mode=mode,
-                use_llm=bool(body.get("use_llm")),
-                llm_base=str(body.get("llm_base") or "").strip(),
-                llm_model=str(body.get("llm_model") or "").strip(),
                 webhook=str(body.get("webhook") or "").strip())
             setup_core.write_env(cur)
             _journal_log("note", f"setup saved ({envn}/{mode}, feed {feed or 'iex'})")

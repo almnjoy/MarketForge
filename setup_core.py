@@ -150,16 +150,12 @@ def first_run_state() -> dict:
         "has_keys": env_exists and has_keys,
         "mode": cur.get("MF_MODE") or ("research" if not has_keys else "manual"),
         "feed": cur.get("ALPACA_DATA_FEED") or "iex",
-        "use_llm": (cur.get("RADAR_USE_LLM") or "false").lower() == "true",
-        "llm_base": cur.get("RADAR_LLM_BASE_URL") or "",
-        "llm_model": cur.get("RADAR_LLM_MODEL") or "",
         "has_webhook": bool(cur.get("RADAR_DISCORD_WEBHOOK")),
     }
 
 
 def apply_answers(cur: dict, *, env_name: str, key: str, sec: str, feed,
-                  mode: str, use_llm=False, llm_base="", llm_model="",
-                  webhook="") -> dict:
+                  mode: str, webhook="") -> dict:
     """Fold wizard answers into an env dict, mirroring the terminal wizard's
     rules exactly: which key fields, auto flags fail closed, feed fallback."""
     kid_field = "ALPACA_KEY_ID" if env_name == "paper" else "ALPACA_LIVE_KEY_ID"
@@ -183,14 +179,12 @@ def apply_answers(cur: dict, *, env_name: str, key: str, sec: str, feed,
         cur["RADAR_AUTO_EXECUTE"] = "false"
         cur["LIVE_AUTO_ENABLED"] = "false"
     cur["MF_MODE"] = mode
-    if use_llm:
-        cur["RADAR_USE_LLM"] = "true"
-        if llm_base:
-            cur["RADAR_LLM_BASE_URL"] = llm_base
-        if llm_model:
-            cur["RADAR_LLM_MODEL"] = llm_model
-    else:
-        cur["RADAR_USE_LLM"] = "false"
+    # Scoring is no longer a question: it rides the coding-agent CLI when one
+    # exists and degrades to alert-only when none does (2026-08-06, Dustin:
+    # no Ollama dependency). An OpenAI endpoint stays available as an env-only
+    # override (RADAR_LLM_PROVIDER=openai in bot/.env) and is left untouched.
+    cur["RADAR_USE_LLM"] = "true"
+    cur.setdefault("RADAR_LLM_PROVIDER", "auto")
     if webhook:
         cur["RADAR_DISCORD_WEBHOOK"] = webhook
     return cur

@@ -143,6 +143,15 @@ def main():
     desk.SHELL.update({"shell": "pywebview", "can_focus": True})
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
+    # WebView2 blocks autoplay by default, and spoken replies are Audio.play()
+    # calls that may land without a fresh user gesture - the first exe test
+    # was silently mute because of it. This env var is the documented channel
+    # for passing browser switches to WebView2; set BEFORE the runtime starts.
+    extra = "--autoplay-policy=no-user-gesture-required"
+    cur = os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "")
+    if extra not in cur:
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = f"{cur} {extra}".strip()
+
     import webview   # imported late: dispatch children must never pay for it
 
     win = webview.create_window(

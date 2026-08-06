@@ -79,6 +79,32 @@ Copied `dist/MarketForge/` to a short temp path and ran `MarketForge.exe`:
 - WebView2 initialized its profile (`webview-data/EBWebView`), i.e. the window
   really loaded the app
 
+## Round 2 - first hands-on test feedback (2026-08-06 evening)
+
+Dustin ran the exe. Chat and the desk worked; voice failed both ways, and the
+Ollama wizard step was unwanted. Fixed:
+
+- **Voice in.** MediaRecorder produces webm/opus in WebView2 and Voicebox
+  `/transcribe` 500s on webm (reproduced: undecodable input = the exact
+  `HTTP 500 {"detail":""}` from his toast). Capture is now raw PCM tapped with
+  a ScriptProcessor and encoded to WAV in the page - whisper's native format,
+  identical in every engine, and the hot mic gained a ~350ms pre-roll so the
+  first syllable stops getting clipped. Verified end to end without a mic:
+  TTS audio decoded in-page, run through the new encoder, transcribed back
+  verbatim through `/api/stt`.
+- **Voice out.** Two causes: WebView2 blocks autoplay (fixed via
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--autoplay-policy=no-user-gesture-required`
+  set by shell.py), and `Audio.play()` rejections plus the nonexistent
+  WebView2 speechSynthesis fallback were swallowed silently - both now surface
+  as toasts. The speech-out happy path still needs ears on the machine.
+- **Catalyst scoring moved onto the coding-agent CLI.** The Ollama step is
+  gone from both wizards; `bot/src/llm.py` scores through headless
+  `claude -p --tools ""` (default model haiku, `RADAR_AGENT_MODEL` to change,
+  ~10s per mover, smoke-tested: a fake FDA-approval mover scored 90/signal).
+  No agent on PATH = alerts without scores = no auto entries, same fail-closed
+  ladder as before. Ollama/OpenRouter remain as an env-only override:
+  `RADAR_LLM_PROVIDER=openai` + `RADAR_LLM_BASE_URL` in bot/.env.
+
 ## Assumed / needs a human at the machine
 
 - **The window looks right** (paint, sizing, dark background, no white flash).

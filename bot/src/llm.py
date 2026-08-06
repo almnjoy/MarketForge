@@ -1,14 +1,23 @@
-"""Tiny OpenAI-compatible chat client for the radar's catalyst curation.
+"""Catalyst scoring for the radar: signal vs noise, 0-100.
 
-Defaults to the homelab Ollama on llmhub (free, private, no key). Point
-RADAR_LLM_BASE_URL at OpenRouter / an Anthropic proxy / etc. to swap models.
-Returns None on ANY failure so the radar degrades gracefully to rules-only.
+Two providers, picked by RADAR_LLM_PROVIDER:
+  agent  - the local coding-agent CLI (claude; CLAUDE_BIN overrides). The SAME
+           optional dependency that powers the copilot seat, so scoring needs
+           no Ollama and no extra install. Default model: haiku (cheap, fast).
+  openai - any OpenAI-compatible endpoint (Ollama, OpenRouter, a proxy).
+  auto   - agent when a CLI is on PATH, else the endpoint if configured.
+
+Returns None on ANY failure so the radar degrades gracefully to alert-only -
+and auto-entries need scores, so no scorer also means no auto entries.
 
 The model triages (real catalyst vs noise); it never sizes or predicts price.
 """
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import urllib.request
 
 import config
@@ -23,9 +32,45 @@ SYSTEM = (
 )
 
 
+def _agent_bin():
+    """The local coding-agent CLI, if any. CLAUDE_BIN overrides; claude first
+    (mirrors the dashboard bridge's resolution)."""
+    override = os.environ.get("CLAUDE_BIN")
+    if override:
+        return override
+    for name in ("claude", "claude.cmd", "claude.exe"):
+        f = shutil.which(name)
+        if f:
+            return f
+    return None
+
+
+def _classify_agent(user, cfg):
+    """One headless agent turn. The fast flags (--tools \"\" + empty MCP config)
+    skip the tool/plugin boot that eats most of the latency - seconds, not
+    minutes. input= gives the child a real stdin (windowed-build safe)."""
+    bin_ = _agent_bin()
+    if not bin_:
+        return None
+    argv = [bin_, "-p", "--model", cfg.RADAR_AGENT_MODEL, "--tools", "",
+            "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+            "--no-session-persistence", "--output-format", "text"]
+    if bin_.lower().endswith((".cmd", ".bat")):
+        argv = ["cmd", "/c"] + argv          # .cmd shims cannot be exec'd directly
+    kw = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+    try:
+        p = subprocess.run(argv, input=SYSTEM + "\n\n" + user, text=True,
+                           encoding="utf-8", errors="replace", capture_output=True,
+                           timeout=cfg.RADAR_AGENT_TIMEOUT, **kw)
+        if p.returncode != 0:
+            return None
+        return _parse(p.stdout or "")
+    except Exception:
+        return None
+
+
 def classify(symbol, pct, price, headlines, cfg=config):
-    base = (cfg.RADAR_LLM_BASE_URL or "").rstrip("/")
-    if not base or not cfg.RADAR_USE_LLM:
+    if not cfg.RADAR_USE_LLM:
         return None
     hl = "\n".join(f"- {h}" for h in headlines[:4]) or "- (no headlines found)"
     user = (
@@ -35,6 +80,21 @@ def classify(symbol, pct, price, headlines, cfg=config):
         '"verdict": "signal" or "noise", "catalyst_type": "<short label>", '
         '"why": "<one short sentence>"}'
     )
+    provider = getattr(cfg, "RADAR_LLM_PROVIDER", "auto")
+    if provider in ("auto", "agent"):
+        if _agent_bin():
+            # a failed call returns None = alert-only for this mover; do NOT
+            # fall through to the endpoint mid-scan or scores mix providers
+            return _classify_agent(user, cfg)
+        if provider == "agent":
+            return None
+    return _classify_openai(user, cfg)
+
+
+def _classify_openai(user, cfg):
+    base = (cfg.RADAR_LLM_BASE_URL or "").rstrip("/")
+    if not base:
+        return None
     body = json.dumps({
         "model": cfg.RADAR_LLM_MODEL,
         "messages": [{"role": "system", "content": SYSTEM},
