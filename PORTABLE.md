@@ -8,6 +8,9 @@ and the AI copilot seat. No Docker, no servers, your keys never leave the machin
 2. Copy `bot\.env.template` -> `bot\.env`, add your **Alpaca PAPER keys**
    (free at alpaca.markets). It STARTS in paper mode with auto-trading OFF.
 3. Double-click **run-portable.bat** -> http://localhost:8410
+   (one window runs the dashboard AND the engine. **stop.bat** stops everything
+   and verifies nothing is left listening - worth using, because closing a
+   Windows console does not reliably kill child processes.)
 4. Optional but worth it:
    - **Claude Code CLI** (or another coding agent) logged in -> the COPILOT tab
      comes alive: chat/voice answers, panel building, day replays.

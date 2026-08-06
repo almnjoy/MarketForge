@@ -1,0 +1,84 @@
+/* MARKET FORGE - DESIGN TOKENS, single source of truth.
+   ==========================================================================
+   Every skin lives here and NOWHERE else. style.css, panel.css and
+   theme-lab.html all import this file, so adding a theme is a one-file edit.
+   Before this existed the same four blocks were pasted into three files and
+   drifted the moment anyone tuned a color.
+
+   Switched by [data-theme] on <html>. The app sets it before first paint and
+   pushes it into panel iframes, which are separate documents and do not
+   inherit it. Axes per Websites/Design-Style-Explorations: paper band /
+   display / accent - two themes only count as different if they differ on at
+   least one.
+
+   NOTHING outside this file may hard-code a color.
+   ========================================================================== */
+:root, [data-theme="forge"] {
+  /* forge, contrast-tuned 2026-08-05: surfaces were blue-tinted, which put body
+     copy at ~6:1 against them. Pushed toward true black, lifted --dim, and
+     dropped the grid to a whisper so it stops competing with text. */
+  --bg: #0a0d13; --panel: #121722; --panel2: #0e131c; --border: #232c3d;
+  --fg: #eef3fa; --dim: #a3b1c6; --faint: #61708a;
+  --grid: rgba(46,60,84,.16); --grid-size: 64px;
+  --primary: #4f9dff;          /* structure / brand blue (chrome, links, signal) */
+  --accent: #ff6a00;           /* heat orange (kickers, CTAs, live badge) */
+  /* P&L is CONVENTIONAL green/red (Dustin 2026-08-05: blue/orange % were hard
+     to parse against these backgrounds) with a magnitude shade scale g1-g3/r1-r3. */
+  --gain: #4ade80; --gain2: #22c55e; --loss: #f87171; --loss2: #ef4444;
+  --success: #22c55e;          /* JS alias (candles etc.) -> green */
+  --danger: #ef4444;           /* JS alias -> red */
+  --warn: #fbbf24;
+  --radius: 18px; --radius-s: 12px;
+  --serif: 'Fraunces', Georgia, serif;
+  --sans: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  --display: var(--serif); --kicker-style: italic; --kicker-ls: .08em;
+  --body: var(--sans); --num: var(--mono); --num-weight: 500;
+  --pad: 18px; --kicker-tt: uppercase;
+}
+/* vault - the Kalshi read: near-black, no backdrop, one accent, numbers get the
+   size budget instead of the chrome. dark / grotesk / cool-green. */
+[data-theme="vault"] {
+  --bg: #08090c; --panel: #101318; --panel2: #0c0e12; --border: #1e232c;
+  --fg: #ffffff; --dim: #9aa3b2; --faint: #6b7280;
+  --grid: transparent; --grid-size: 64px;
+  --primary: #00d68f; --accent: #00d68f;
+  --gain: #00d68f; --gain2: #00b377; --loss: #ff5c5c; --loss2: #e04343;
+  --success: #00d68f; --danger: #ff5c5c; --warn: #ffc043;
+  --radius: 12px; --radius-s: 9px;
+  --serif: 'Inter', system-ui, sans-serif;
+  --sans: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  --display: var(--sans); --kicker-style: normal; --kicker-ls: .14em;
+  --body: var(--sans); --num: var(--sans); --num-weight: 700; --pad: 20px; --kicker-tt: uppercase;
+}
+/* tape - trading desk terminal. dark / mono / amber. */
+[data-theme="tape"] {
+  --bg: #000000; --panel: #0b0b0b; --panel2: #070707; --border: #242018;
+  --fg: #ffd9a0; --dim: #b08d5c; --faint: #7a6034;
+  --grid: transparent; --grid-size: 64px;
+  --primary: #ffb000; --accent: #ffb000;
+  --gain: #4ce660; --gain2: #38c94a; --loss: #ff4d4d; --loss2: #e03a3a;
+  --success: #4ce660; --danger: #ff4d4d; --warn: #ffb000;
+  --radius: 3px; --radius-s: 2px;
+  --serif: "JetBrains Mono", Consolas, monospace;
+  --sans: "JetBrains Mono", Consolas, monospace;
+  --mono: "JetBrains Mono", Consolas, monospace;
+  --display: var(--mono); --kicker-style: normal; --kicker-ls: .06em;
+  --body: var(--mono); --num: var(--mono); --num-weight: 700; --pad: 12px; --kicker-tt: uppercase;
+}
+/* broadsheet - daylight mode. light / serif-headline / warm. */
+[data-theme="broadsheet"] {
+  --bg: #f7f5f0; --panel: #ffffff; --panel2: #faf8f4; --border: #ddd6c9;
+  --fg: #14181f; --dim: #4d5766; --faint: #8b94a3;
+  --grid: rgba(0,0,0,.035); --grid-size: 32px;
+  --primary: #1d5fb8; --accent: #c9500d;
+  --gain: #0f7b52; --gain2: #0b5c3d; --loss: #c0342b; --loss2: #96271f;
+  --success: #0f7b52; --danger: #c0342b; --warn: #a35d00;
+  --radius: 10px; --radius-s: 7px;
+  --serif: 'Fraunces', Georgia, serif;
+  --sans: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  --display: var(--serif); --kicker-style: normal; --kicker-ls: .1em;
+  --body: var(--sans); --num: var(--mono); --num-weight: 500; --pad: 18px; --kicker-tt: uppercase;
+}

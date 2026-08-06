@@ -9,9 +9,9 @@ two file buses Claude Code drives:
   chat-inbox.jsonl   -> what Dustin says in the COPILOT tab (voice or typed)
   chat-outbox.jsonl  -> what Claude Code answers; the tab renders + speaks it
 
-Run:  run-portable.bat -> :8410 (embedded engine, bot/.env)
-      run.bat          -> :8411 (second desk, e.g. a remote//hosted engine)
-      MF_PORT overrides either.
+Run:  run-portable.bat  ->  http://localhost:8410  (dashboard + engine, one window)
+      stop.bat           ->  full stop + verify nothing is left listening
+      MF_PORT=8412 python app.py  ->  a second instance on another port
 Bot base URL + port live in config.json.
 """
 from __future__ import annotations

@@ -23,6 +23,16 @@
 
   const RANGES = { '1M': 22, '3M': 66, '6M': 132, '1Y': 252, 'ALL': 2000 };
 
+  // chart-core.js holds the renderer shared with the app. Panels written before
+  // it existed only include panel-kit.js, so load it ourselves instead of
+  // breaking every board already on disk.
+  const coreReady = global.MFChart ? Promise.resolve() : new Promise((res) => {
+    const t = document.createElement('script');
+    t.src = '/static/chart-core.js';
+    t.onload = res; t.onerror = res;      // resolve either way; draw() reports it
+    document.head.appendChild(t);
+  });
+
   const money = (v, d = 2) => v == null || isNaN(v) ? '--'
     : '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
   const num = (v) => v == null || isNaN(v) ? '--' : Number(v).toLocaleString();
@@ -43,59 +53,31 @@
     })).filter(b => b.c);
   }
 
-  /* ---------- chart: line or candle, crosshair, hover readout ---------- */
+  /* ---------- chart: delegates to chart-core.js (shared with the app) ----------
+     panels get chart-core via panel.css's sibling include; if a panel forgot it,
+     say so instead of rendering a blank box. */
   function draw(host, data, opt) {
-    const W = host.clientWidth || 900, H = opt.height || 260;
-    const PR = 62, PB = 20, iw = W - PR, ih = H - PB;
+    if (!global.MFChart) {
+      host.innerHTML = '<div class="mf-empty">chart-core.js not loaded - add ' +
+        '&lt;script src="/static/chart-core.js"&gt;&lt;/script&gt;</div>';
+      return;
+    }
     if (!data.length) { host.innerHTML = '<div class="mf-empty">no bars</div>'; return; }
-    const his = Math.max(...data.map(b => b.h)), los = Math.min(...data.map(b => b.l));
-    const rng = (his - los) || 1, pad = rng * 0.08;
-    const hi = his + pad, lo = los - pad, span = hi - lo;
-    const x = i => (i / Math.max(1, data.length - 1)) * (iw - 8) + 4;
-    const y = p => ih - ((p - lo) / span) * (ih - 10) - 5;
-    const up = data[data.length - 1].c >= data[0].c;
-    const stroke = up ? 'var(--gain, #4ade80)' : 'var(--loss, #f87171)';
-
-    let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" class="mf-svg">`;
-    for (let i = 0; i <= 4; i++) {
-      const p = hi - (span * i) / 4, gy = y(p);
-      s += `<line x1="0" y1="${gy}" x2="${iw}" y2="${gy}" stroke="var(--border)" opacity=".55"/>`;
-      s += `<text x="${iw + 6}" y="${gy + 4}" fill="var(--dim)" font-size="11">${money(p)}</text>`;
-    }
-    if (opt.type === 'candle') {
-      const cw = iw / data.length, bw = Math.max(1, Math.min(9, cw * 0.62));
-      data.forEach((b, i) => {
-        const cx = x(i), c = b.c >= b.o ? 'var(--gain,#4ade80)' : 'var(--loss,#f87171)';
-        s += `<line x1="${cx}" y1="${y(b.h)}" x2="${cx}" y2="${y(b.l)}" stroke="${c}"/>`;
-        s += `<rect x="${cx - bw / 2}" y="${Math.min(y(b.o), y(b.c))}" width="${bw}" ` +
-             `height="${Math.max(1, Math.abs(y(b.o) - y(b.c)))}" fill="${c}"/>`;
-      });
-    } else {
-      const pts = data.map((b, i) => `${x(i)},${y(b.c)}`).join(' ');
-      s += `<polyline points="${pts}" fill="none" stroke="${stroke}" stroke-width="2"
-             stroke-linejoin="round" stroke-linecap="round"/>`;
-    }
-    const step = Math.max(1, Math.round(data.length / 6));
-    for (let i = 0; i < data.length; i += step)
-      s += `<text x="${x(i)}" y="${H - 4}" fill="var(--dim)" font-size="10.5">${data[i].t.slice(5)}</text>`;
-    s += `<line class="mf-cross" x1="0" y1="0" x2="0" y2="${ih}" stroke="var(--dim)" stroke-dasharray="3 3" opacity="0"/>`;
-    s += '</svg>';
-    host.innerHTML = s + `<div class="mf-read"><b>${data.length} bars</b> · ${opt.range || ''}` +
-      `<span class="mf-hover"></span><span class="mf-lohi">lo ${money(los)} · hi ${money(his)}</span></div>`;
-
-    // crosshair + hover readout. Pointer maths mirrors the x() scale above.
-    const svg = host.querySelector('svg'), cross = host.querySelector('.mf-cross'),
-          read = host.querySelector('.mf-hover');
-    svg.addEventListener('pointermove', (e) => {
-      const r = svg.getBoundingClientRect();
-      const px = ((e.clientX - r.left) / r.width) * W;
-      const i = Math.max(0, Math.min(data.length - 1, Math.round(((px - 4) / (iw - 8)) * (data.length - 1))));
-      const b = data[i];
-      cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('opacity', '.7');
-      read.innerHTML = ` · <b>${b.t}</b> O ${money(b.o)} H ${money(b.h)} L ${money(b.l)} ` +
-        `<b>C ${money(b.c)}</b> V ${num(b.v)}`;
+    const W = host.clientWidth || 900;
+    const { svg, geom } = global.MFChart.render(data, {
+      w: W, h: opt.height || 260, type: opt.type || 'line', volume: false,
     });
-    svg.addEventListener('pointerleave', () => { cross.setAttribute('opacity', '0'); read.textContent = ''; });
+    const los = Math.min(...data.map(b => b.l)), his = Math.max(...data.map(b => b.h));
+    host.innerHTML = svg +
+      `<div class="mf-read"><b>${data.length} bars</b> \u00b7 ${opt.range || ''}` +
+      `<span class="mf-hover"></span>` +
+      `<span class="mf-lohi">lo ${money(los)} \u00b7 hi ${money(his)}</span></div>`;
+    const svgEl = host.querySelector('svg'), read = host.querySelector('.mf-hover');
+    global.MFChart.attachCrosshair(svgEl, data, geom, (b) => {
+      if (!b) { read.textContent = ''; return; }
+      read.innerHTML = ` \u00b7 <b>${b.t}</b> O ${money(b.o)} H ${money(b.h)} ` +
+        `L ${money(b.l)} <b>C ${money(b.c)}</b> V ${num(b.v)}`;
+    });
   }
 
   async function chart(target, opt = {}) {
@@ -114,6 +96,7 @@
     const cache = {};                 // range -> bars, so a redraw never refetches
     let curRange = o.range, lastW = 0, busy = false;
 
+    await coreReady;
     const render = async (range, quiet = false) => {
       if (busy) return;               // overlapping renders fight over innerHTML
       busy = true; curRange = range;

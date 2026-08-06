@@ -93,9 +93,11 @@ state this app can be in.
 ## The machine you're driving
 - **One process, everything local.** `run-portable.bat` (`MF_EMBEDDED=1`) serves the
   dashboard on **:8410** and spawns the bot engine in the same process tree. No
-  server, no Docker. `run.bat` is a second desk on :8411 for a remote engine.
-  `MF_PORT` overrides; the server refuses to start on a busy port rather than
-  silently serving you the wrong account.
+  server, no Docker. `stop.bat` stops it and verifies nothing is left listening.
+  `MF_PORT` runs a second instance on another port; the server refuses to start
+  on a busy one rather than silently serving you the wrong account.
+  (`run.bat` was retired to `_retired/run-remote.bat` - it pointed at a hosted
+  engine that no longer exists.)
 - The dashboard polls files every ~2.5s. You NEVER need to restart it to change content.
 
 ## Your two levers (file buses)

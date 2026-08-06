@@ -26,3 +26,6 @@ state.json
 
 # TradingView captures - personal, regenerated on demand
 tv-shots/
+
+# personal trading playbooks - not product
+BRAIN-*.md

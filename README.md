@@ -80,7 +80,11 @@ Full walkthrough: [PORTABLE.md](PORTABLE.md).
 |---|---|
 | **Catalyst radar** | Alpaca movers screener, every % re-verified against real bars and the live tape (stale prints and split artifacts get dropped), LLM triage with news + Reddit hot-page buzz folded in, live "now vs alert" on every card. |
 | **Hard-coded discipline** | Fail-closed gates: conviction score floor, price floor, per-trade size, entries/day, total exposure, kill-switch. Every auto-entry exits via a GTC **trailing stop armed at fill** - no naked positions, ever. |
-| **The copilot** | Chat or talk (hot-mic, spoken replies). It builds live panels on the Workbench while you watch, honors your `memory.md` standing orders, explains any knob on the RULES tab, and replays your day from the journal - git history for your decisions. |
+| **The copilot** | Chat or talk (hot-mic, spoken replies). It builds live panels on the Workbench while you watch, honors your `memory.md` standing orders, explains any risk knob, and replays your day from the journal - git history for your decisions. Conversations are grouped by day in a sidebar. |
+| **Never a naked position** | Every entry arms a trailing stop at fill. If the fill is slow, a disk-backed watcher keeps trying for six hours; a sweep every 30s flags anything still unprotected and puts a red banner on Overview with a one-click Arm button. `POST /api/protect` can attach an exit to a position that already exists. |
+| **Steer TradingView by voice** | "Pull up AMWL on the daily" moves your actual TradingView chart, and the desk can screenshot it to a PNG - so an AI agent can *look* at the chart and tell you what it sees. Optional; see [DEPENDENCIES.md](DEPENDENCIES.md). |
+| **Four skins** | forge, vault, tape and broadsheet, switchable under Admin -> Appearance. One token file drives the app, the panels and the theme lab. |
+| **Admin, read-only** | What is running, on which model, from which files, what it has cost. No controls - it answers "what is in place", nothing more. |
 
 <div align="center">
 <img src="docs/screenshots/overview.png" alt="Overview - account, chart and open positions" width="850">
@@ -152,8 +156,12 @@ fills. See [rules and risk](https://docs.madeformeai.com/marketforge/rules-and-r
 
 <img src="docs/architecture.svg" alt="Market Forge architecture" width="100%">
 
-Two run modes: `run-portable.bat` = everything in one window (the one you want).
-`run.bat` = dashboard only, engine hosted elsewhere.
+`run-portable.bat` runs everything in one window: dashboard on **:8410** plus the
+engine in the same process tree. `stop.bat` stops it and verifies nothing is left
+listening. `MF_PORT=8412 python app.py` runs a second instance; the server refuses
+to start on a busy port rather than silently serving you a different account.
+
+Full endpoint list: **[docs/API.md](docs/API.md)**. Agent brief: `CLAUDE.md`.
 
 </details>
 

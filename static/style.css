@@ -1,80 +1,15 @@
-/* STOCKS//LOCAL - GridPulse skin (ported from the MadeForMeAI builder mockup).
-   Brand language: blue = gain ▲, orange = loss ▼ (every color means ONE thing),
-   Fraunces serif for display, Georgia body, 64px grid backdrop, lifted cards.
-   NOTE for CC: --success/--danger keep their NAMES (JS references them) but map
-   to brand blue/orange. Tweak freely. */
+/* MARKET FORGE - app stylesheet.
+   Structure only. Every colour, font and radius comes from tokens.css.
+   Brand language: structure blue + heat orange for chrome; P&L is CONVENTIONAL
+   green/red with an arrow, never colour alone, intensity scaled by magnitude.
+   (--success/--danger keep their NAMES because JS references them.) */
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Inter:wght@400;500;600;700&display=swap');
 
-/* ---------- THEMES ----------
-   One markup tree, N skins, switched by [data-theme] on <html> (the style-engine
-   mechanism from Websites/Design-Style-Explorations). The picker lives in the top
-   bar, the choice persists in localStorage, and config.json `theme` sets the
-   default for a fresh install. Add a theme = add a block here + a line in
-   THEMES in app.js. Nothing else in this file may hard-code a color. */
-:root, [data-theme="forge"] {
-  /* forge, contrast-tuned 2026-08-05: surfaces were blue-tinted, which put body
-     copy at ~6:1 against them. Pushed toward true black, lifted --dim, and
-     dropped the grid to a whisper so it stops competing with text. */
-  --bg: #0a0d13; --panel: #121722; --panel2: #0e131c; --border: #232c3d;
-  --fg: #eef3fa; --dim: #a3b1c6; --faint: #61708a;
-  --grid: rgba(46,60,84,.16); --grid-size: 64px;
-  --primary: #4f9dff;          /* structure / brand blue (chrome, links, signal) */
-  --accent: #ff6a00;           /* heat orange (kickers, CTAs, live badge) */
-  /* P&L is CONVENTIONAL green/red (Dustin 2026-08-05: blue/orange % were hard
-     to parse against these backgrounds) with a magnitude shade scale g1-g3/r1-r3. */
-  --gain: #4ade80; --gain2: #22c55e; --loss: #f87171; --loss2: #ef4444;
-  --success: #22c55e;          /* JS alias (candles etc.) -> green */
-  --danger: #ef4444;           /* JS alias -> red */
-  --warn: #fbbf24;
-  --radius: 18px; --radius-s: 12px;
-  --serif: 'Fraunces', Georgia, serif;
-  --sans: 'Inter', 'Segoe UI', system-ui, sans-serif;
-  --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-  --display: var(--serif); --kicker-style: italic; --kicker-ls: .08em;
-}
-/* vault - the Kalshi read: near-black, no backdrop, one accent, numbers get the
-   size budget instead of the chrome. dark / grotesk / cool-green. */
-[data-theme="vault"] {
-  --bg: #08090c; --panel: #101318; --panel2: #0c0e12; --border: #1e232c;
-  --fg: #ffffff; --dim: #9aa3b2; --faint: #6b7280;
-  --grid: transparent; --grid-size: 64px;
-  --primary: #00d68f; --accent: #00d68f;
-  --gain: #00d68f; --gain2: #00b377; --loss: #ff5c5c; --loss2: #e04343;
-  --success: #00d68f; --danger: #ff5c5c; --warn: #ffc043;
-  --radius: 12px; --radius-s: 9px;
-  --serif: 'Inter', system-ui, sans-serif;
-  --sans: 'Inter', 'Segoe UI', system-ui, sans-serif;
-  --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-  --display: var(--sans); --kicker-style: normal; --kicker-ls: .14em;
-}
-/* tape - trading desk terminal. dark / mono / amber. */
-[data-theme="tape"] {
-  --bg: #000000; --panel: #0b0b0b; --panel2: #070707; --border: #242018;
-  --fg: #ffd9a0; --dim: #b08d5c; --faint: #7a6034;
-  --grid: transparent; --grid-size: 64px;
-  --primary: #ffb000; --accent: #ffb000;
-  --gain: #4ce660; --gain2: #38c94a; --loss: #ff4d4d; --loss2: #e03a3a;
-  --success: #4ce660; --danger: #ff4d4d; --warn: #ffb000;
-  --radius: 3px; --radius-s: 2px;
-  --serif: "JetBrains Mono", Consolas, monospace;
-  --sans: "JetBrains Mono", Consolas, monospace;
-  --mono: "JetBrains Mono", Consolas, monospace;
-  --display: var(--mono); --kicker-style: normal; --kicker-ls: .06em;
-}
-/* broadsheet - daylight mode. light / serif-headline / warm. */
-[data-theme="broadsheet"] {
-  --bg: #f7f5f0; --panel: #ffffff; --panel2: #faf8f4; --border: #ddd6c9;
-  --fg: #14181f; --dim: #4d5766; --faint: #8b94a3;
-  --grid: rgba(0,0,0,.035); --grid-size: 32px;
-  --primary: #1d5fb8; --accent: #c9500d;
-  --gain: #0f7b52; --gain2: #0b5c3d; --loss: #c0342b; --loss2: #96271f;
-  --success: #0f7b52; --danger: #c0342b; --warn: #a35d00;
-  --radius: 10px; --radius-s: 7px;
-  --serif: 'Fraunces', Georgia, serif;
-  --sans: 'Inter', 'Segoe UI', system-ui, sans-serif;
-  --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-  --display: var(--serif); --kicker-style: normal; --kicker-ls: .1em;
-}
+
+/* Every skin lives in tokens.css - one file, imported here and by panel.css.
+   @import must precede all rules except @charset, so it stays at the top. */
+@import url('/static/tokens.css');
+
 * { box-sizing: border-box; }
 body {
   margin: 0; background-color: var(--bg); color: var(--fg);

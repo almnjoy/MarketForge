@@ -97,54 +97,11 @@ marketClock(); setInterval(marketClock, 30000);
 
 /* ---------- candlestick SVG (no libs; gridlines + price axis + volume) ---------- */
 function candles(bars, w = 880, h = 340, type = 'candle') {
-  if (!bars?.length) return '<div class="dim">no bars</div>';
-  const PR = 56;                      // right gutter for the price axis
-  const VH = 44, GAP = 14;            // volume strip height + gap
-  const CH = h - VH - GAP - 18;       // candle area height
-  const n = bars.length, lo = Math.min(...bars.map(b => b.l)), hi = Math.max(...bars.map(b => b.h));
-  const rng = (hi - lo) || 1, cw = (w - PR - 6) / n, bw = Math.max(2, cw - 3);
-  const maxV = Math.max(...bars.map(b => b.v || 0), 1);
-  const y = (p) => 6 + CH * (1 - (p - lo) / rng);
-  const fmtP = (p) => p >= 1000 ? p.toFixed(0) : p >= 100 ? p.toFixed(1) : p.toFixed(2);
-  let s = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" font-family="Inter,system-ui,sans-serif">`;
-  // horizontal gridlines + price labels (5 ticks)
-  for (let i = 0; i <= 4; i++) {
-    const p = hi - (rng * i) / 4, gy = y(p);
-    s += `<line x1="0" y1="${gy}" x2="${w - PR}" y2="${gy}" stroke="var(--border)" stroke-width="1" opacity=".6"/>`;
-    s += `<text x="${w - PR + 6}" y="${gy + 4}" fill="var(--dim)" font-size="11.5">${fmtP(p)}</text>`;
-  }
-  // line mode: one stroke over the closes, tinted by the period's direction
-  if (type === 'line') {
-    const pts = bars.map((b, i) => `${3 + i * cw + bw / 2},${y(b.c)}`).join(' ');
-    const rising = bars.at(-1).c >= bars[0].c;
-    s += `<polyline points="${pts}" fill="none" stroke="${rising ? 'var(--success)' : 'var(--danger)'}" ` +
-         `stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
-  }
-  // candles + volume
-  bars.forEach((b, i) => {
-    const x = 3 + i * cw, cx = x + bw / 2, up = b.c >= b.o, col = up ? 'var(--success)' : 'var(--danger)';
-    if (type !== 'line') {
-      s += `<line x1="${cx}" y1="${y(b.h)}" x2="${cx}" y2="${y(b.l)}" stroke="${col}" stroke-width="1.2"/>`;
-      const top = y(Math.max(b.o, b.c)), bh2 = Math.max(1.5, Math.abs(y(b.o) - y(b.c)));
-      s += `<rect x="${x}" y="${top}" width="${bw}" height="${bh2}" rx="1" fill="${col}" opacity="${up ? .95 : .85}">` +
-           `<title>${b.t}  O ${fmtP(b.o)}  H ${fmtP(b.h)}  L ${fmtP(b.l)}  C ${fmtP(b.c)}${b.v ? '  V ' + (b.v / 1e6).toFixed(1) + 'M' : ''}</title></rect>`;
-    }
-    if (b.v) {
-      const vh = Math.max(1, (b.v / maxV) * VH);
-      s += `<rect x="${x}" y="${h - 16 - vh}" width="${bw}" height="${vh}" fill="${col}" opacity=".35"/>`;
-    }
-  });
-  // last-price dashed line + tag
-  const last = bars[n - 1], ly = y(last.c);
-  s += `<line x1="0" y1="${ly}" x2="${w - PR}" y2="${ly}" stroke="var(--primary)" stroke-width="1" stroke-dasharray="5 4" opacity=".8"/>`;
-  s += `<rect x="${w - PR + 2}" y="${ly - 10}" width="${PR - 4}" height="19" rx="5" fill="var(--primary)"/>`;
-  s += `<text x="${w - PR / 2}" y="${ly + 4}" text-anchor="middle" fill="#08111f" font-size="11.5" font-weight="700">${fmtP(last.c)}</text>`;
-  // x date labels (~6)
-  const step = Math.max(1, Math.round(n / 6));
-  for (let i = 0; i < n; i += step) {
-    s += `<text x="${3 + i * cw}" y="${h - 3}" fill="var(--dim)" font-size="10.5">${(bars[i].t || '').slice(5)}</text>`;
-  }
-  return s + '</svg>';
+  // Thin wrapper: the maths lives in chart-core.js, shared with the panel kit.
+  // Keeps the old string-returning signature so existing callers are untouched.
+  const r = MFChart.render(bars, { w, h, type });
+  chartGeom = r.geom;
+  return r.svg;
 }
 
 /* ---------- overview ---------- */
@@ -171,34 +128,20 @@ async function pickDefaultChart() {
    reports the real OHLC of the bar under the pointer. The maths mirrors candles()
    exactly - if you change padding or the price-axis width there, change it here. */
 const CHART_RANGES = { '1M': 22, '3M': 90, '6M': 132, '1Y': 252 };
-let chartRange = '3M', chartType = 'candle', chartBars = [];
+let chartRange = '3M', chartType = 'candle', chartBars = [], chartGeom = null;
 
 function wireChartHover() {
-  const box = $('#bigChart'), svg = box.querySelector('svg'), read = $('#chartHover');
-  if (!svg || !chartBars.length) return;
-  const W = 880, PR = 56, n = chartBars.length, cw = (W - PR - 6) / n;  // must match candles()
-  let cross = svg.querySelector('.xhair');
-  if (!cross) {
-    cross = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    cross.setAttribute('class', 'xhair'); cross.setAttribute('y1', 0);
-    cross.setAttribute('y2', 340); cross.setAttribute('stroke', 'var(--dim)');
-    cross.setAttribute('stroke-dasharray', '3 3'); cross.setAttribute('opacity', '0');
-    svg.appendChild(cross);
-  }
-  const move = (e) => {
-    const r = svg.getBoundingClientRect();
-    const px = ((e.clientX - r.left) / r.width) * W;
-    const i = Math.max(0, Math.min(n - 1, Math.floor((px - 3) / cw)));
-    const b = chartBars[i], x = 3 + i * cw + cw / 2;
-    cross.setAttribute('x1', x); cross.setAttribute('x2', x); cross.setAttribute('opacity', '.65');
+  const svg = $('#bigChart').querySelector('svg'), read = $('#chartHover');
+  if (!svg || !chartGeom || !chartBars.length) return;
+  // No more "must match candles()" - the geometry comes back FROM the renderer.
+  MFChart.attachCrosshair(svg, chartBars, chartGeom, (b) => {
+    if (!b) { read.classList.remove('on'); return; }
     const up = b.c >= b.o;
-    read.innerHTML = `<b>${esc(b.t || '')}</b> · O ${fmt$(b.o)} H ${fmt$(b.h)} ` +
+    read.innerHTML = `<b>${esc(b.t || '')}</b> \u00b7 O ${fmt$(b.o)} H ${fmt$(b.h)} ` +
       `L ${fmt$(b.l)} <b class="${up ? 'up' : 'down'}">C ${fmt$(b.c)}</b>` +
-      (b.v ? ` · vol ${Number(b.v).toLocaleString()}` : '');
+      (b.v ? ` \u00b7 vol ${Number(b.v).toLocaleString()}` : '');
     read.classList.add('on');
-  };
-  svg.onpointermove = move;
-  svg.onpointerleave = () => { cross.setAttribute('opacity', '0'); read.classList.remove('on'); };
+  });
 }
 
 async function loadChart() {

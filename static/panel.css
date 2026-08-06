@@ -2,24 +2,8 @@
    Include in any panels/*.html and the panel inherits the app's current theme
    (the dashboard sets [data-theme] on the iframe's <html> after load).
    Every value here is a token, so a panel never hard-codes a color. */
-:root, [data-theme="forge"] {
-  --bg:#0a0d13; --panel:#121722; --panel2:#0e131c; --border:#232c3d;
-  --fg:#eef3fa; --dim:#a3b1c6; --faint:#61708a;
-  --primary:#4f9dff; --accent:#ff6a00; --gain:#4ade80; --loss:#f87171;
-  --radius:14px;
-  --serif:'Fraunces',Georgia,serif; --sans:'Inter','Segoe UI',system-ui,sans-serif;
-  --mono:"Cascadia Code","JetBrains Mono",Consolas,monospace;
-}
-[data-theme="vault"]{--bg:#08090c;--panel:#101318;--panel2:#0c0e12;--border:#1e232c;
-  --fg:#fff;--dim:#9aa3b2;--faint:#6b7280;--primary:#00d68f;--accent:#00d68f;
-  --gain:#00d68f;--loss:#ff5c5c;--radius:12px;--serif:var(--sans);}
-[data-theme="tape"]{--bg:#000;--panel:#0b0b0b;--panel2:#070707;--border:#242018;
-  --fg:#ffd9a0;--dim:#b08d5c;--faint:#7a6034;--primary:#ffb000;--accent:#ffb000;
-  --gain:#4ce660;--loss:#ff4d4d;--radius:3px;
-  --serif:var(--mono);--sans:var(--mono);}
-[data-theme="broadsheet"]{--bg:#f7f5f0;--panel:#fff;--panel2:#faf8f4;--border:#ddd6c9;
-  --fg:#14181f;--dim:#4d5766;--faint:#8b94a3;--primary:#1d5fb8;--accent:#c9500d;
-  --gain:#0f7b52;--loss:#c0342b;--radius:10px;}
+/* Skins come from tokens.css so a panel always matches the app. */
+@import url('/static/tokens.css');
 
 * { box-sizing: border-box; }
 body { margin:0; padding:18px 20px; background:var(--panel); color:var(--fg);

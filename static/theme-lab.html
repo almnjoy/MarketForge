@@ -5,67 +5,11 @@
 <title>Market Forge - theme lab</title>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Instrument+Serif&display=swap" rel="stylesheet">
 <style>
+@import url("/static/tokens.css");
 /* ============================================================
    THEME LAB - one markup tree, N themes, real Market Forge parts.
    Axes per STYLE-ENGINE-REFERENCE: paper band / display / accent.
    ============================================================ */
-
-/* ---- forge: today's theme, contrast-tuned ------------------
-   paper dark · display serif · accent warm
-   Fixes vs live: surfaces pushed toward true black (was blue-tinted),
-   body text lifted to ~13:1, grid dropped to a whisper behind text. */
-[data-theme="forge"]{
-  --bg:#0a0d13; --grid:rgba(46,60,84,.16); --grid-size:64px;
-  --panel:#121722; --panel2:#0e131c; --border:#232c3d;
-  --fg:#eef3fa; --dim:#93a3ba; --faint:#61708a;
-  --primary:#4f9dff; --accent:#ff6a00;
-  --gain:#34d399; --loss:#f05252;
-  --display:'Fraunces',Georgia,serif; --body:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
-  --radius:14px; --pad:18px; --kicker-style:italic; --kicker-tt:uppercase; --kicker-ls:.08em;
-  --num:'JetBrains Mono',monospace; --num-weight:500;
-}
-/* ---- vault: the Kalshi read ---------------------------------
-   paper dark(er) · display grotesk · accent cool-green
-   Near-black, no pattern, one accent, numbers get the size budget
-   instead of the chrome. Orange demoted to brand-only. */
-[data-theme="vault"]{
-  --bg:#08090c; --grid:transparent; --grid-size:64px;
-  --panel:#101318; --panel2:#0c0e12; --border:#1e232c;
-  --fg:#ffffff; --dim:#9aa3b2; --faint:#6b7280;
-  --primary:#00d68f; --accent:#00d68f;
-  --gain:#00d68f; --loss:#ff5c5c;
-  --display:'Inter',system-ui,sans-serif; --body:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
-  --radius:12px; --pad:20px; --kicker-style:normal; --kicker-tt:uppercase; --kicker-ls:.14em;
-  --num:'Inter',system-ui,sans-serif; --num-weight:700;
-}
-/* ---- tape: the trading desk terminal -------------------------
-   paper dark · display mono · accent amber
-   Everything mono, dense, amber on black. Maximum information
-   density, zero decoration. */
-[data-theme="tape"]{
-  --bg:#000000; --grid:transparent; --grid-size:64px;
-  --panel:#0b0b0b; --panel2:#070707; --border:#242018;
-  --fg:#ffd9a0; --dim:#b08d5c; --faint:#7a6034;
-  --primary:#ffb000; --accent:#ffb000;
-  --gain:#4ce660; --loss:#ff4d4d;
-  --display:'JetBrains Mono',monospace; --body:'JetBrains Mono',monospace; --mono:'JetBrains Mono',monospace;
-  --radius:2px; --pad:12px; --kicker-style:normal; --kicker-tt:uppercase; --kicker-ls:.06em;
-  --num:'JetBrains Mono',monospace; --num-weight:700;
-}
-/* ---- broadsheet: daylight mode --------------------------------
-   paper light · display serif-headline · accent warm
-   For a bright room. Keeps the forge orange as the only color that
-   isn't data. */
-[data-theme="broadsheet"]{
-  --bg:#f7f5f0; --grid:rgba(0,0,0,.035); --grid-size:32px;
-  --panel:#ffffff; --panel2:#faf8f4; --border:#ddd6c9;
-  --fg:#14181f; --dim:#5b6472; --faint:#8b94a3;
-  --primary:#b1440e; --accent:#d2560f;
-  --gain:#0f7b52; --loss:#c0342b;
-  --display:'Instrument Serif',Georgia,serif; --body:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
-  --radius:8px; --pad:18px; --kicker-style:normal; --kicker-tt:uppercase; --kicker-ls:.1em;
-  --num:'JetBrains Mono',monospace; --num-weight:500;
-}
 
 *{box-sizing:border-box}
 body{

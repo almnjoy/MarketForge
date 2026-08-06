@@ -22,6 +22,7 @@ No Docker. No database. No Node.js. No cloud account. Nothing phones home.
 | **Ollama** | Catalyst **scoring** (signal vs noise, 0-100 + why) | `ollama pull qwen2.5:3b`, then `RADAR_USE_LLM=true` in `bot/.env`. Any OpenAI-compatible endpoint works. Without it: alerts, no scores - and auto-entries need scores. |
 | **[Voicebox](https://voicebox.sh/)** (Kokoro voice) | A natural voice for spoken replies | Local TTS app. Point `voicebox_url` in `config.json` at it. Without it the browser voice speaks. |
 | **Chrome or Edge** | Voice **input** (push-to-talk + hot mic) | Browser speech recognition. Everything else works in any modern browser. |
+| **Chrome + a TradingView account** | Steering **TradingView** from the desk: change symbol and timeframe by voice, and capture the chart to a PNG an AI agent can read | Run `run-tradingview.bat`. It opens Chrome with the DevTools protocol on :9222 and its own profile - log in once. Without it, `/api/tv/*` just reports that no debug browser is running and nothing else is affected. |
 | **Discord webhook** | Radar alerts pushed to your phone | `RADAR_DISCORD_WEBHOOK` in `bot/.env`. |
 | **FRED API key** | Richer macro context in the Market Brief | Free from the St. Louis Fed. `FRED_API_KEY` in `bot/.env`. |
 
