@@ -88,7 +88,7 @@ body {
 #tabs button.on { color: var(--fg); }
 #tabs button.on::after { width: 100%; }
 
-main { padding: 16px; max-width: 1700px; margin: 0 auto; }
+main { padding: 16px 20px; max-width: min(2200px, 95vw); margin: 0 auto; }
 .view { display: none; } .view.on { display: block; }
 
 /* ---------- panels + kickers ---------- */

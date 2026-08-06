@@ -13,5 +13,6 @@ __pycache__/
 bot-src.tgz
 nohup.out
 
-# demo audio is generated locally, never committed
+# raw screen captures are huge (60MB+ per take) - only the cut MP4 ships
+demo/raw/
 demo/audio/

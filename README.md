@@ -13,7 +13,9 @@ Catalyst radar, hard-coded discipline, and a copilot that builds your board in r
 
 [Website](https://madeformeai.com/marketforge) · [Docs](https://docs.madeformeai.com/marketforge/index) · [Discord](https://discord.gg/JE8TEYZp2f) · [Agent install](AGENT-INSTALL.md) · [Dependencies](DEPENDENCIES.md)
 
-<img src="docs/screenshots/radar.png" alt="Catalyst radar" width="850">
+<img src="docs/screenshots/demo.gif" alt="Market Forge in motion" width="850">
+
+<sub><a href="https://youtu.be/Q2wnAheNqRw">▶ Watch the full 100-second narrated demo</a></sub>
 
 </div>
 
@@ -54,8 +56,15 @@ powershell -c "irm https://madeformeai.com/marketforge/install.ps1 | iex"
 curl -fsSL https://madeformeai.com/marketforge/install.sh | bash
 ```
 
-**Have your AI agent do it:** paste the block in [AGENT-INSTALL.md](AGENT-INSTALL.md)
-into your agent - it installs, configures your paper keys with you, and learns your plan.
+**Have your AI agent do it:** say this to Claude Code, Codex, Cursor, any of them.
+
+```
+Claude, set up Market Forge on my machine:
+https://madeformeai.com/marketforge/setup.md
+```
+
+It reads the rest itself, then installs, runs the key wizard *with* you, and learns
+your plan. Details: [AGENT-INSTALL.md](AGENT-INSTALL.md).
 
 **Manual:** clone this repo, `pip install -r requirements.txt`, copy
 `bot/.env.template` to `bot/.env` with your [Alpaca](https://alpaca.markets) paper
@@ -74,8 +83,17 @@ Full walkthrough: [PORTABLE.md](PORTABLE.md).
 | **The copilot** | Chat or talk (hot-mic, spoken replies). It builds live panels on the Workbench while you watch, honors your `memory.md` standing orders, explains any knob on the RULES tab, and replays your day from the journal - git history for your decisions. |
 
 <div align="center">
-<img src="docs/screenshots/copilot.png" alt="Copilot chat with the live bridge" width="850">
+<img src="docs/screenshots/overview.png" alt="Overview - account, chart and open positions" width="850">
+<sub>The desk on open: real account, live chart, open positions, and the PAPER badge that ships by default.</sub>
+
+<img src="docs/screenshots/retail-radar.png" alt="Retail radar - Reddit buzz folded into the score" width="850">
+<sub>Retail radar - what r/wallstreetbets, r/swingtrading and r/stocks are actually talking about, ranked by heat.</sub>
+
 <img src="docs/screenshots/workbench.png" alt="Workbench - panels the copilot builds live" width="850">
+<sub>The Workbench. Ask for a board and the copilot writes it while you watch.</sub>
+
+<img src="docs/screenshots/rules.png" alt="Rules - the gates the engine actually runs" width="850">
+<sub>Every gate, in plain English, exactly as the engine is running it.</sub>
 </div>
 
 More of the cockpit: `Ctrl+K` command palette (anything it doesn't recognize goes

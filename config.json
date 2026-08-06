@@ -1,5 +1,6 @@
 {
   "bot_base": "http://10.20.20.100:8796",
   "port": 8410,
-  "voicebox_url": "http://127.0.0.1:17493"
+  "voicebox_url": "http://127.0.0.1:17493",
+  "voicebox_profile": "Adam"
 }

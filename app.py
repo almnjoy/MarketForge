@@ -88,7 +88,8 @@ def _bot_supervisor():
         time.sleep(backoff)
         backoff = min(60, backoff * 2)
 VOICEBOX = str(_cfg["voicebox_url"]).rstrip("/")
-_vb_profile = {"id": None}  # cached first kokoro profile (API shape per the Interview Bot)
+_vb_profile = {"id": None}   # the app's default voice, resolved once from config
+_VB_ENGINE_OK = {}           # profile_id -> the engine field shape Voicebox accepted
 
 # ---- live copilot bridge -------------------------------------------------
 # New chat-inbox lines automatically get a headless `claude -p` turn (no more
@@ -304,22 +305,63 @@ def _read_jsonl(path: Path, limit=200):
     return out
 
 
-def _vb_first_profile():
-    """First Kokoro-capable Voicebox profile (engine reported as preset_engine
-    for presets, default_engine for clones - same filter the Interview Bot uses)."""
-    if _vb_profile["id"]:
-        return _vb_profile["id"]
+def _vb_profiles():
+    """Every Voicebox profile as [{id, name, engine, is_clone}].
+
+    Voicebox reports the engine as `preset_engine` for its built-in voices and
+    `default_engine` for voices you cloned yourself - which is how we tell the
+    two apart."""
     req = urllib.request.Request(f"{VOICEBOX}/profiles", headers={"Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=8) as r:
         data = json.loads(r.read())
     items = data if isinstance(data, list) else data.get("profiles", [])
+    out = []
     for p in items:
-        if (p.get("preset_engine") or p.get("default_engine") or "").lower() == "kokoro":
-            pid = p.get("id") or p.get("profile_id")
-            if pid:
-                _vb_profile["id"] = pid
-                return pid
-    return None
+        pid = p.get("id") or p.get("profile_id")
+        if not pid:
+            continue
+        preset = (p.get("preset_engine") or "").lower()
+        out.append({"id": pid,
+                    "name": str(p.get("name") or p.get("title") or ""),
+                    "engine": preset or (p.get("default_engine") or "").lower(),
+                    "is_clone": not preset})
+    return out
+
+
+def _vb_pick_profile(want=None):
+    """Which voice actually speaks. Priority:
+
+      1. an explicit profile id/name passed per request
+      2. config.json `voicebox_profile` (id, or a case-insensitive name match)
+      3. the first CLONED voice
+      4. anything at all
+
+    Cloned voices beat presets on purpose: sounding like *you* is the entire
+    reason to run Voicebox instead of the browser's built-in speech. The old
+    behaviour filtered to engine == "kokoro", which silently excluded every
+    clone and always landed on a stock preset voice."""
+    want = str(want or _cfg.get("voicebox_profile") or "").strip()
+    if _vb_profile["id"] and not want:
+        return _vb_profile["id"]
+    profs = _vb_profiles()
+    if not profs:
+        return None
+    explicit = bool(want) and want != str(_cfg.get("voicebox_profile") or "").strip()
+    pick = None
+    if want:
+        pick = next((p for p in profs if p["id"] == want), None) \
+            or next((p for p in profs if want.lower() in p["name"].lower()), None)
+    if not pick:
+        pick = next((p for p in profs if p["is_clone"]), None) or profs[0]
+    # A one-off voice (say, a narrator) must not become the app's default, or the
+    # dashboard quietly adopts it for every reply after the first.
+    if not explicit:
+        _vb_profile.update({"id": pick["id"], "name": pick["name"],
+                            "engine": pick["engine"] or "", "is_clone": pick["is_clone"]})
+    else:
+        _vb_profile["engine"] = pick["engine"] or ""
+        _vb_profile["is_clone"] = pick["is_clone"]
+    return pick["id"]
 
 
 def _panels_state(root=None):
@@ -495,11 +537,22 @@ class Handler(BaseHTTPRequestHandler):
                                     "ts": round(d.stat().st_mtime, 0)})
             return self._json({"saved": out})
 
+        if path == "/api/tts/profiles":
+            # every voice Voicebox knows about, so you can pick yours by name
+            try:
+                return self._json({"profiles": _vb_profiles(),
+                                   "using": _vb_profile.get("id"),
+                                   "configured": _cfg.get("voicebox_profile")})
+            except Exception as e:
+                return self._json({"error": f"Voicebox unreachable: {str(e)[:100]}"}, 502)
+
         if path == "/api/tts/health":
             try:
-                pid = _vb_first_profile()
+                pid = _vb_pick_profile()
                 return self._json({"ok": bool(pid), "profile_id": pid,
-                                   "hint": None if pid else "no Kokoro voice in Voicebox"})
+                                   "voice": _vb_profile.get("name"),
+                                   "engine": _vb_profile.get("engine"),
+                                   "hint": None if pid else "no voice profile in Voicebox"})
             except Exception as e:
                 return self._json({"ok": False, "error": f"Voicebox unreachable: {str(e)[:100]}"})
 
@@ -601,23 +654,46 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 return self._json({"error": "empty"}, 400)
             try:
-                pid = _vb_first_profile()
+                pid = _vb_pick_profile(body.get("profile_id"))
                 if not pid:
-                    return self._json({"error": "no Kokoro voice profile in Voicebox"}, 502)
-                payload = json.dumps({"text": text, "profile_id": pid,
-                                      "engine": "kokoro", "language": "en"}).encode()
-                req = urllib.request.Request(f"{VOICEBOX}/generate/stream", data=payload,
-                                             method="POST",
-                                             headers={"Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=120) as r:
-                    audio = r.read()
-                    ctype = r.headers.get("Content-Type", "audio/wav")
-                if "json" in ctype:
-                    return self._json({"error": "voicebox returned JSON not audio"}, 502)
-                return self._raw(audio, ctype)
+                    return self._json({"error": "no voice profile in Voicebox"}, 502)
+                # Cloned voices 400 if you name an engine they don't own, and the
+                # presets 400 if you omit it. Rather than hard-code which is which,
+                # try the most likely shape first and fall back. The winner is
+                # cached per profile so it only ever costs one extra call.
+                known = _vb_profile.get("engine")
+                shapes = [None, "kokoro"] if _vb_profile.get("is_clone") else [known or "kokoro", None]
+                if known and known not in shapes:
+                    shapes.insert(0, known)
+                # None is a valid shape (omit the field), so probe with a sentinel.
+                # Cache per profile: a preset wants engine="kokoro", a clone wants
+                # the field left out entirely, so one shared answer would break one.
+                cached = _VB_ENGINE_OK.get(pid, "\x00unset")
+                if cached != "\x00unset" and cached in shapes:
+                    shapes = [cached]
+                last = None
+                for eng in shapes:
+                    p = {"text": text, "profile_id": pid, "language": "en"}
+                    if eng:
+                        p["engine"] = eng
+                    req = urllib.request.Request(f"{VOICEBOX}/generate/stream",
+                                                 data=json.dumps(p).encode(), method="POST",
+                                                 headers={"Content-Type": "application/json"})
+                    try:
+                        with urllib.request.urlopen(req, timeout=120) as r:
+                            audio = r.read()
+                            ctype = r.headers.get("Content-Type", "audio/wav")
+                        if "json" in ctype:
+                            last = "voicebox returned JSON not audio"
+                            continue
+                        _VB_ENGINE_OK[pid] = eng
+                        return self._raw(audio, ctype)
+                    except Exception as e:
+                        last = str(e)[:120]
+                raise RuntimeError(last or "no working engine shape")
             except Exception as e:
                 _vb_profile["id"] = None  # re-probe next time
-                return self._json({"error": f"voicebox failed: {str(e)[:120]}"}, 502)
+                return self._json({"error": f"voicebox failed: {str(e)[:160]}"}, 502)
 
         if parsed.path == "/api/bot/order":
             # human trade ticket -> bot /api/order (confirm gate lives on the bot).

@@ -107,7 +107,8 @@ async function loadOverview() {
     $('#equityTicker').textContent = fmt$(s.equity);
     $('#statRow').innerHTML = [
       ['Equity', fmt$(s.equity), ''], ['Cash', fmt$(s.cash), ''],
-      ['Positions', fmt$(s.positions_value), `${s.open_positions} open`],
+      // account positions vs bot-tracked trades are two different counts - show both
+      ['Positions', fmt$(s.positions_value), `${pos.length} open${s.open_positions ? ` · ${s.open_positions} from bot` : ''}`],
       ['Day P/L', arrow(s.day_pl_pct) + (s.day_pl_pct >= 0 ? '+' : '') + (s.day_pl_pct * 100).toFixed(2) + '%', '', cls(s.day_pl_pct)],
       ['Drawdown', (s.drawdown_pct * 100).toFixed(1) + '%', '', s.drawdown_pct > 0.05 ? 'warn' : ''],
       ['Bankroll', fmt$(s.bankroll, 0), `${fmt$(s.committed)} used`],

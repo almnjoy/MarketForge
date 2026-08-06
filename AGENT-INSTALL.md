@@ -1,7 +1,16 @@
 # Install Market Forge with your AI agent
 
-Copy the block below and paste it to your coding agent (Claude Code, Codex, Cursor,
-whatever you run). It will set the whole desk up and configure it WITH you.
+Say this to your coding agent (Claude Code, Codex, Cursor, whatever you run):
+
+```
+Claude, set up Market Forge on my machine:
+https://madeformeai.com/marketforge/setup.md
+```
+
+It fetches the instructions below and walks the whole install with you. That's it.
+
+<details>
+<summary>What it reads (the full instruction set)</summary>
 
 ```
 Set up Market Forge - the open-source AI trading desk - on this machine.
@@ -34,6 +43,8 @@ Hard rules for you, the agent: never enable live trading, never place any
 trade, and never change risk settings without my explicit instruction in
 this conversation.
 ```
+
+</details>
 
 Why this works: Market Forge's copilot seat is plain files + localhost HTTP
 (`panels/`, `chat-*.jsonl`, `memory.md`, `journal.jsonl` - see CLAUDE.md). Any capable
