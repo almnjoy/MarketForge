@@ -33,14 +33,21 @@ DATA = "https://data.alpaca.markets"
 
 
 def read_env() -> dict:
-    """Current settings: bot/.env if present, else the template."""
+    """Current settings: bot/.env if present, else the template.
+
+    Inline comments are stripped from VALUES ("KEY=100000  # why" -> "100000"):
+    the template uses them, and carrying them into a written .env fed comment
+    text into int() inside the engine (found by the first frozen-build test)."""
     cur = {}
     src = ENV if ENV.exists() else TEMPLATE
     if src.exists():
         for line in src.read_text(encoding="utf-8").splitlines():
             m = re.match(r"^([A-Z_]+)=(.*)$", line.strip())
             if m:
-                cur[m.group(1)] = m.group(2)
+                val = m.group(2)
+                if " #" in val:
+                    val = val.split(" #", 1)[0]
+                cur[m.group(1)] = val.strip()
     return cur
 
 

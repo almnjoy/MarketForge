@@ -1,0 +1,46 @@
+<!-- title: WELCOME TO THE WORKBENCH -->
+<!-- size: wide -->
+<link rel="stylesheet" href="/static/panel.css">
+<script src="/static/panel-kit.js"></script>
+
+<div class="kick">market forge · the workbench</div>
+<h1>This board is alive.</h1>
+<p>Every card here is one HTML file in the <code>panels/</code> folder. The desk
+re-reads that folder every couple of seconds, so <b>whoever can write a file can
+transform this page</b> - you, or the AI copilot sitting in the COPILOT tab.</p>
+
+<div class="row two">
+  <div class="card accent">
+    <h3>Try it with the copilot</h3>
+    <p class="dim">Open the COPILOT tab (or press <code>Ctrl+K</code>) and say:</p>
+    <p><code>build the morning brief as one full-width board</code></p>
+    <p class="dim">It reads the live radar and your positions, then writes panels
+    here while you watch. Delete a file, the card disappears. That contract is
+    the whole product.</p>
+  </div>
+  <div class="card">
+    <h3>Live data, to prove it</h3>
+    <div id="spy"></div>
+    <p class="faint" style="margin-top:8px">This chart is fetched from your own
+    engine at <code>/api/bot/bars</code> - if it renders, your keys work.</p>
+  </div>
+</div>
+
+<h2>Where things live</h2>
+<div class="row">
+  <div class="card"><span class="tag">panels/*.html</span>
+    <p class="dim" style="margin-top:8px">This board. One file = one card.
+    <code>&lt;!-- title: --&gt;</code> names it, <code>&lt;!-- size: --&gt;</code> sizes it.</p></div>
+  <div class="card"><span class="tag">memory.md</span>
+    <p class="dim" style="margin-top:8px">Your standing orders (🧠 in the top bar).
+    The copilot honors them on every turn - it IS your trading plan.</p></div>
+  <div class="card"><span class="tag">journal.jsonl</span>
+    <p class="dim" style="margin-top:8px">The decision log: every scan, chat,
+    order and board. Ask the copilot to <i>replay a day</i> from it.</p></div>
+</div>
+
+<p class="faint" style="margin-top:16px">Safety, in one line: paper account by
+default, nothing trades itself unless you turned that on in setup, and every
+entry the bot ever places carries a trailing stop.</p>
+
+<script>MF.chart('#spy', { symbol: 'SPY', range: '3M' })</script>

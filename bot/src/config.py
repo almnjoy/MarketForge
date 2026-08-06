@@ -34,6 +34,13 @@ def _load_dotenv(path: Path) -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, val = line.partition("=")
+        # .env.template ships inline comments ("KEY=100000   # why"), and the
+        # template header says to copy it to bot/.env - so a fresh install fed
+        # them straight into int() and the engine died on boot. Strip a
+        # whitespace-preceded # tail before anything else.
+        val = val.strip()
+        if " #" in val:
+            val = val.split(" #", 1)[0]
         os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
 
 
