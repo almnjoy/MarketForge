@@ -10,19 +10,13 @@ Safe to re-run - it shows your current settings and lets you keep them.
 """
 from __future__ import annotations
 
-import json
-import re
 import sys
-import urllib.error
-import urllib.request
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-ENV = ROOT / "bot" / ".env"
-TEMPLATE = ROOT / "bot" / ".env.template"
-
-TRADE = {"paper": "https://paper-api.alpaca.markets", "live": "https://api.alpaca.markets"}
-DATA = "https://data.alpaca.markets"
+# One shared implementation for validation, feed detection and .env writing.
+# The web wizard (/api/setup/* in app.py) calls the same functions - keep ALL
+# setup logic in setup_core so the two wizards cannot drift.
+import setup_core
+from setup_core import ENV
 
 C = {"b": "\033[1m", "d": "\033[2m", "g": "\033[32m", "y": "\033[33m",
      "r": "\033[31m", "c": "\033[36m", "x": "\033[0m"}
@@ -64,56 +58,15 @@ def choose(prompt, options):
             return options[int(v) - 1][0]
 
 
-def read_env():
-    cur = {}
-    src = ENV if ENV.exists() else TEMPLATE
-    if src.exists():
-        for line in src.read_text(encoding="utf-8").splitlines():
-            m = re.match(r"^([A-Z_]+)=(.*)$", line.strip())
-            if m:
-                cur[m.group(1)] = m.group(2)
-    return cur
-
-
-def api(base, path, key, sec, timeout=15):
-    req = urllib.request.Request(f"{base}{path}", headers={
-        "APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": sec, "accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.load(r)
-
-
 def check_keys(env_name, key, sec):
     """Validate against the account endpoint. Returns the account dict or None."""
-    try:
-        acct = api(TRADE[env_name], "/v2/account", key, sec)
+    acct, err = setup_core.check_keys(env_name, key, sec)
+    if acct:
         ok(f"keys work - account {acct.get('status', '?').lower()}, "
            f"equity ${float(acct.get('equity', 0)):,.2f}")
         return acct
-    except urllib.error.HTTPError as e:
-        bad(f"Alpaca rejected these keys ({e.code}). Paper keys only work in paper mode "
-            f"and live keys only in live mode - make sure you copied the right pair.")
-    except Exception as e:
-        bad(f"could not reach Alpaca: {str(e)[:90]}")
+    bad(err)
     return None
-
-
-def detect_feed(key, sec):
-    """Is this account entitled to REAL-TIME consolidated (SIP) data?
-
-    Probe the LATEST TRADE endpoint, not historical bars: free plans can read
-    older SIP bars, so a bars probe answers 200 and lies. Recent SIP data returns
-    403 "subscription does not permit querying recent SIP data" without the
-    real-time add-on.
-    """
-    try:
-        api(DATA, "/v2/stocks/AAPL/trades/latest?feed=sip", key, sec, timeout=12)
-        return "sip"
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            return "iex"
-        return "iex"
-    except Exception:
-        return None
 
 
 def main():
@@ -132,7 +85,7 @@ def main():
     except ImportError:
         warn("Flask missing - run:  python -m pip install -r requirements.txt")
 
-    cur = read_env()
+    cur = setup_core.read_env()
 
     head("2. Alpaca keys")
     dim("Free account at alpaca.markets. Use the PAPER dashboard's API keys to start -")
@@ -154,25 +107,19 @@ def main():
         acct = check_keys(mode_env, key, sec)
         if acct is None and input("  try again? [Y/n]: ").strip().lower() == "n":
             return 1
-    cur[kid_field], cur[sec_field] = key, sec
-    cur["STOCK_ENV"] = mode_env
 
     head("3. Market data")
     dim("Checking what your account is entitled to...")
-    feed = detect_feed(key, sec)
+    feed = setup_core.detect_feed(key, sec)
     if feed == "sip":
         ok("REAL-TIME (SIP) data available on this account - using it")
         dim("full consolidated tape, all exchanges")
-        cur["ALPACA_DATA_FEED"] = "sip"
-        cur.setdefault("MIN_DOLLAR_VOLUME", "20000000")
     elif feed == "iex":
         ok("free IEX feed (no real-time subscription found)")
         dim("IEX only, a slice of total volume. Alpaca sells real-time SIP as an add-on;")
         dim("if you subscribe later, rerun this setup and it will switch automatically.")
-        cur["ALPACA_DATA_FEED"] = "iex"
     else:
         warn("could not check the data feed - leaving it on the free IEX feed")
-        cur["ALPACA_DATA_FEED"] = cur.get("ALPACA_DATA_FEED", "iex")
 
     head("4. How will you use it?")
     use = choose("Pick a mode (you can change it any time)", [
@@ -184,45 +131,26 @@ def main():
         warn("auto entries: $50 a trade, 2 a day, $150 total, trailing stop always armed")
         if mode_env == "live":
             warn("this is REAL money. Both switches must be on, and they are - by your choice.")
-        cur["RADAR_AUTO_EXECUTE"] = "true"
-        cur["LIVE_AUTO_ENABLED"] = "true" if mode_env == "live" else "false"
-    else:
-        cur["RADAR_AUTO_EXECUTE"] = "false"
-        cur["LIVE_AUTO_ENABLED"] = "false"
-    cur["MF_MODE"] = use
 
     head("5. Catalyst scoring (optional)")
     dim("An LLM labels each mover signal or noise with a 0-100 score and a reason.")
     dim("Easiest free option: install Ollama, then `ollama pull qwen2.5:3b`.")
-    if input("  enable scoring? [y/N]: ").strip().lower() == "y":
-        cur["RADAR_USE_LLM"] = "true"
-        cur["RADAR_LLM_BASE_URL"] = ask("LLM base url", cur.get("RADAR_LLM_BASE_URL") or "http://127.0.0.1:11434/v1")
-        cur["RADAR_LLM_MODEL"] = ask("model", cur.get("RADAR_LLM_MODEL") or "qwen2.5:3b")
+    use_llm = input("  enable scoring? [y/N]: ").strip().lower() == "y"
+    llm_base = llm_model = ""
+    if use_llm:
+        llm_base = ask("LLM base url", cur.get("RADAR_LLM_BASE_URL") or "http://127.0.0.1:11434/v1")
+        llm_model = ask("model", cur.get("RADAR_LLM_MODEL") or "qwen2.5:3b")
     else:
-        cur["RADAR_USE_LLM"] = "false"
         dim("rules-only: you still get alerts, just no scores (and no auto entries)")
 
     head("6. Alerts (optional)")
     dim("A Discord webhook pushes scored catalysts to your phone. Enter to skip.")
     hook = input("  webhook url: ").strip()
-    if hook:
-        cur["RADAR_DISCORD_WEBHOOK"] = hook
 
-    # write bot/.env, preserving template order and comments
-    base = TEMPLATE.read_text(encoding="utf-8") if TEMPLATE.exists() else ""
-    out, seen = [], set()
-    for line in base.splitlines():
-        m = re.match(r"^([A-Z_]+)=", line)
-        if m and m.group(1) in cur:
-            out.append(f"{m.group(1)}={cur[m.group(1)]}")
-            seen.add(m.group(1))
-        else:
-            out.append(line)
-    for k, v in cur.items():
-        if k not in seen:
-            out.append(f"{k}={v}")
-    ENV.parent.mkdir(exist_ok=True)
-    ENV.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+    setup_core.apply_answers(cur, env_name=mode_env, key=key, sec=sec, feed=feed,
+                             mode=use, use_llm=use_llm, llm_base=llm_base,
+                             llm_model=llm_model, webhook=hook)
+    setup_core.write_env(cur)
 
     head("Done")
     ok(f"wrote {ENV}")

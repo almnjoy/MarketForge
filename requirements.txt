@@ -1,1 +1,9 @@
+# The engine's web layer.
 flask>=3.0
+# The engine's Alpaca HTTP client (bot/src/alpaca_client.py). Was never listed
+# here - it only worked on machines that happened to have it installed.
+requests>=2.31
+# Windows has no system timezone database, so without this the scan scheduler
+# silently falls back to LOCAL time and the 10/12/2/4 ET scans fire at the
+# wrong hours for anyone outside Eastern. No-op on Linux/macOS.
+tzdata>=2024.1

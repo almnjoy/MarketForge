@@ -27,5 +27,12 @@ state.json
 # TradingView captures - personal, regenerated on demand
 tv-shots/
 
+# desktop build output (build.py) + shell runtime state
+dist/
+build/
+webview-data/
+logs/
+bot/.env.bak*
+
 # personal trading playbooks - not product
 BRAIN-*.md

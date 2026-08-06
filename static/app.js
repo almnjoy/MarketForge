@@ -41,6 +41,67 @@ function initTheme(cfgTheme) {
 }
 initTheme();
 
+/* ---------- shell awareness ----------
+   Feature-detect, never shell-detect: /api/shell says what the host can do.
+   The page must not know or care WHICH shell it is in beyond that - the same
+   frontend runs in Chrome, pywebview, or anything else. */
+let shellInfo = { shell: 'browser' };
+function extOpen(url) {
+  // In a webview an unhandled target=_blank either does nothing or traps you
+  // in a chromeless window; route outbound links to the SYSTEM browser there.
+  if (shellInfo.shell === 'browser') { window.open(url, '_blank'); return; }
+  J('/api/shell/open', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }) }).catch(() => {});
+}
+function hookLinks(doc) {
+  doc.addEventListener('click', (e) => {
+    if (shellInfo.shell === 'browser') return;
+    const a = e.target && e.target.closest && e.target.closest('a[href]');
+    if (!a) return;
+    const href = a.href || '';
+    if (!/^https?:/i.test(href) || href.startsWith(location.origin)) return;
+    e.preventDefault(); e.stopPropagation();
+    extOpen(href);
+  }, true);
+}
+hookLinks(document);
+(async () => { try { shellInfo = await J('/api/shell'); } catch {} })();
+
+/* ---------- splash ----------
+   Mounted synchronously so there is no flash of desk first; every fetch below
+   keeps running underneath it, so the desk is already populated when it lifts
+   (a splash that gates loading just trades a logo for a spinner). Any click or
+   key skips it. splash_ms in config.json tunes it; 0 disables (cached locally
+   so a disabled splash never even mounts on later visits). */
+(() => {
+  const cached = Number(localStorage.getItem('mfSplashMs') ?? '2500');
+  if (!cached) { J('/api/meta').then(m => localStorage.setItem('mfSplashMs', String(m.splash_ms ?? 2500))).catch(() => {}); return; }
+  const el = document.createElement('div');
+  el.id = 'splash';
+  el.innerHTML = '<img src="/static/logo.svg" alt=""><div class="sp-word">MARKET<span>FORGE</span></div>';
+  document.body.appendChild(el);
+  let gone = false;
+  const lift = () => {
+    if (gone) return; gone = true;
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 500);
+    removeEventListener('keydown', lift, true);
+  };
+  el.addEventListener('click', lift);
+  addEventListener('keydown', lift, true);
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const t0 = performance.now();
+  let timer = setTimeout(lift, reduced ? 900 : cached);
+  J('/api/meta').then(m => {
+    const ms = Number(m.splash_ms ?? 2500);
+    localStorage.setItem('mfSplashMs', String(ms));
+    if (!ms) { lift(); return; }
+    if (reduced) return;               // reduced-motion cut stays short
+    clearTimeout(timer);
+    timer = setTimeout(lift, Math.max(150, ms - (performance.now() - t0)));
+  }).catch(() => {});
+})();
+
 /* ---------- tabs ---------- */
 document.querySelectorAll('#tabs button').forEach((b) => b.onclick = () => {
   document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x === b));
@@ -397,9 +458,11 @@ async function loadPanels(force = false) {
     const fr = document.createElement('iframe');
     fr.sandbox = 'allow-scripts allow-same-origin allow-popups';
     fr.src = `/api/panel?name=${encodeURIComponent(p.name)}&v=${p.mtime}`;
-    // an iframe is its own document and does NOT inherit [data-theme]
+    // an iframe is its own document and does NOT inherit [data-theme]; it also
+    // needs the external-link hook or a panel's news links die inside a shell
     fr.onload = () => { try {
       fr.contentDocument.documentElement.dataset.theme = document.documentElement.dataset.theme;
+      hookLinks(fr.contentDocument);
     } catch {} };
     card.appendChild(fr); wb.appendChild(card);
     watchResize(card, p.name);
@@ -918,35 +981,182 @@ $('#chatInput').addEventListener('keydown', (e) => {
 });
 
 /* voice in: push-to-talk (#micBtn, COPILOT tab) + HOT MIC (#hotMic, topbar - always
-   listening from ANY tab; the whole app is one page so tabs don't matter). Echo-guarded:
-   anything heard while the copilot is speaking gets discarded. Chrome caps continuous
-   sessions, so hot mic auto-restarts on end. */
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-if (SR) {
-  const rec = new SR(); rec.lang = 'en-US'; rec.interimResults = true;
-  let on = false;
-  rec.onresult = (e) => { $('#chatInput').value = [...e.results].map(r => r[0].transcript).join(''); };
-  rec.onend = () => { $('#micBtn').classList.remove('rec'); on = false; if ($('#chatInput').value.trim()) sendChat(); };
-  $('#micBtn').onclick = () => { on ? rec.stop() : (rec.start(), $('#micBtn').classList.add('rec'), on = true); };
+   listening from ANY tab). Echo-guarded: anything heard while the copilot is
+   speaking gets discarded.
 
-  const hot = new SR(); hot.lang = 'en-US'; hot.continuous = true; hot.interimResults = false;
-  let hotOn = false;
-  hot.onresult = (e) => {
-    if (speakingNow) return;                       // that's our own voice - drop it
-    const text = [...e.results].slice(e.resultIndex).map(r => r[0].transcript).join(' ').trim();
-    if (text.length > 2) {
-      J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text } ) }).then(loadChat);
+   TWO ENGINES, picked live:
+   1) PREFERRED: MediaRecorder -> POST /api/stt (Voicebox whisper, local).
+      MediaRecorder exists in every modern engine, unlike SpeechRecognition -
+      WebView2 has NO Web Speech API, which is exactly how the old hot mic died
+      the moment the desk left Chrome. Bonus: fully offline, no Google.
+   2) FALLBACK: browser SpeechRecognition (Chrome/Edge) when Voicebox is absent.
+   Neither available -> buttons disabled with an honest tooltip. */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let sttOk = false;
+async function sttHealth() {
+  try { sttOk = !!(await J('/api/stt/health')).ok; } catch { sttOk = false; }
+  return sttOk;
+}
+
+/* --- engine 1: MediaRecorder + /api/stt ---------------------------------- */
+let micStream = null;
+async function getMic() {
+  if (micStream && micStream.active) return micStream;
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true } });
+  return micStream;
+}
+function dropMic() {
+  try { micStream?.getTracks().forEach(t => t.stop()); } catch {}
+  micStream = null;
+}
+function recMime() {
+  for (const m of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'])
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+  return '';
+}
+async function transcribe(blob) {
+  const r = await fetch('/api/stt', { method: 'POST',
+    headers: { 'Content-Type': (blob.type || 'audio/webm').split(';')[0] }, body: blob });
+  const d = await r.json().catch(() => ({}));
+  if (!d.ok) throw new Error(d.error || 'transcribe failed');
+  return (d.text || '').trim();
+}
+
+/* push-to-talk: click = record, click again = stop -> transcribe -> send */
+let pttRec = null;
+async function pttToggle() {
+  if (pttRec) { pttRec.stop(); return; }
+  try {
+    const stream = await getMic();
+    const chunks = [];
+    pttRec = new MediaRecorder(stream, recMime() ? { mimeType: recMime() } : {});
+    pttRec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    pttRec.onstop = async () => {
+      $('#micBtn').classList.remove('rec');
+      const blob = new Blob(chunks, { type: pttRec.mimeType || 'audio/webm' });
+      pttRec = null;
+      if (blob.size < 2000) return;               // a click-click, not speech
+      $('#chatInput').placeholder = 'transcribing...';
+      try {
+        const text = await transcribe(blob);
+        $('#chatInput').value = text;
+        if (text) sendChat();
+      } catch (e) { notify('voice: ' + e.message, 'err'); }
+      $('#chatInput').placeholder = 'Ask anything about the market, or tell me what to build...';
+    };
+    pttRec.start();
+    $('#micBtn').classList.add('rec');
+  } catch (e) { pttRec = null; notify('mic: ' + e.message, 'err'); }
+}
+
+/* hot mic: RMS voice-activity chunking. Record only while someone is talking,
+   close the utterance after ~1.2s of silence, transcribe, send to the copilot.
+   The recorder restarts per utterance because a mid-stream webm slice has no
+   header and will not decode. */
+let hotOn = false, hotTick = null, hotCtx = null, hotRec2 = null, hotEcho = false;
+async function hotStart() {
+  const stream = await getMic();
+  hotCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const srcNode = hotCtx.createMediaStreamSource(stream);
+  const an = hotCtx.createAnalyser(); an.fftSize = 2048;
+  srcNode.connect(an);
+  const buf = new Float32Array(an.fftSize);
+  const THRESH = 0.015, SILENCE_MS = 1200, MIN_MS = 450;
+  let talking = false, lastVoice = 0, started = 0, chunks = [];
+  hotTick = setInterval(() => {
+    if (!hotOn) return;
+    an.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+    const rms = Math.sqrt(sum / buf.length), now = performance.now();
+    if (rms > THRESH) lastVoice = now;
+    if (!talking && rms > THRESH) {
+      if (speakingNow) return;                     // that's our own voice
+      talking = true; started = now; chunks = []; hotEcho = false;
+      hotRec2 = new MediaRecorder(stream, recMime() ? { mimeType: recMime() } : {});
+      hotRec2.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+      hotRec2.onstop = async () => {
+        const blob = new Blob(chunks, { type: hotRec2?.mimeType || 'audio/webm' });
+        const ms = performance.now() - started;   // not the tick's `now` - that
+        hotRec2 = null;                           // is frozen at utterance start
+        if (hotEcho || ms < MIN_MS || blob.size < 2000) return;
+        try {
+          const text = await transcribe(blob);
+          if (text.length > 2)
+            J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text }) }).then(loadChat);
+        } catch {}                                  // hot mic fails quiet
+      };
+      hotRec2.start();
+    } else if (talking) {
+      if (speakingNow) hotEcho = true;             // TTS lit up mid-utterance
+      if (now - lastVoice > SILENCE_MS) {
+        talking = false;
+        try { hotRec2?.stop(); } catch {}
+      }
     }
+  }, 90);
+}
+function hotStop() {
+  clearInterval(hotTick); hotTick = null;
+  try { hotRec2?.stop(); } catch {}
+  try { hotCtx?.close(); } catch {}
+  hotCtx = null;
+  dropMic();
+}
+
+/* --- engine 2: legacy SpeechRecognition (Chrome/Edge, needs Google) ------- */
+let srPtt = null, srHot = null;
+function srPttToggle() {
+  if (srPtt) { srPtt.stop(); return; }
+  srPtt = new SR(); srPtt.lang = 'en-US'; srPtt.interimResults = true;
+  srPtt.onresult = (e) => { $('#chatInput').value = [...e.results].map(r => r[0].transcript).join(''); };
+  srPtt.onend = () => { $('#micBtn').classList.remove('rec'); srPtt = null; if ($('#chatInput').value.trim()) sendChat(); };
+  srPtt.start(); $('#micBtn').classList.add('rec');
+}
+function srHotStart() {
+  srHot = new SR(); srHot.lang = 'en-US'; srHot.continuous = true; srHot.interimResults = false;
+  srHot.onresult = (e) => {
+    if (speakingNow) return;
+    const text = [...e.results].slice(e.resultIndex).map(r => r[0].transcript).join(' ').trim();
+    if (text.length > 2)
+      J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }) }).then(loadChat);
   };
-  hot.onend = () => { if (hotOn) { try { hot.start(); } catch {} } };   // Chrome kills long sessions - relight
-  hot.onerror = (e) => { if (e.error === 'not-allowed') { hotOn = false; $('#hotMic').classList.remove('on'); } };
-  $('#hotMic').onclick = () => {
-    hotOn = !hotOn;
-    $('#hotMic').classList.toggle('on', hotOn);
-    $('#hotMic').textContent = hotOn ? '🎙 hot mic ON' : '🎙 hot mic';
-    try { hotOn ? hot.start() : hot.stop(); } catch {}
-  };
-} else { $('#micBtn').title = 'voice needs Chrome/Edge'; $('#micBtn').disabled = true; $('#hotMic').disabled = true; }
+  srHot.onend = () => { if (hotOn) { try { srHot.start(); } catch {} } };  // Chrome kills long sessions - relight
+  srHot.onerror = (e) => { if (e.error === 'not-allowed') hotToggle(false); };
+  srHot.start();
+}
+function srHotStop() { try { srHot?.stop(); } catch {} srHot = null; }
+
+/* --- wiring: pick an engine at click time -------------------------------- */
+const hasRecorder = !!(navigator.mediaDevices && window.MediaRecorder);
+$('#micBtn').onclick = async () => {
+  if (pttRec || srPtt) { pttRec ? pttRec.stop() : srPtt.stop(); return; }
+  if (hasRecorder && (sttOk || await sttHealth())) return pttToggle();
+  if (SR) return srPttToggle();
+  notify('voice input needs Voicebox running, or Chrome/Edge', 'warn');
+};
+async function hotToggle(next = !hotOn) {
+  hotOn = next;
+  $('#hotMic').classList.toggle('on', hotOn);
+  $('#hotMic').textContent = hotOn ? '🎙 hot mic ON' : '🎙 hot mic';
+  if (!hotOn) { hotStop(); srHotStop(); return; }
+  try {
+    if (hasRecorder && (sttOk || await sttHealth())) return await hotStart();
+    if (SR) return srHotStart();
+    notify('voice input needs Voicebox running, or Chrome/Edge', 'warn');
+    hotToggle(false);
+  } catch (e) { notify('mic: ' + e.message, 'err'); hotToggle(false); }
+}
+$('#hotMic').onclick = () => hotToggle();
+sttHealth().then(() => {
+  if (!sttOk && !SR && !hasRecorder) {
+    $('#micBtn').title = 'voice needs Voicebox, or Chrome/Edge';
+    $('#micBtn').disabled = true; $('#hotMic').disabled = true;
+  }
+});
 
 /* ---------- trade ticket ---------- */
 let tk = { symbol: '', side: 'buy' };
