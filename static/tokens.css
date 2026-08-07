@@ -22,7 +22,7 @@
   --grid: rgba(46,60,84,.16); --grid-size: 64px;
   --primary: #4f9dff;          /* structure / brand blue (chrome, links, signal) */
   --accent: #ff6a00;           /* heat orange (kickers, CTAs, live badge) */
-  /* P&L is CONVENTIONAL green/red (Dustin 2026-08-05: blue/orange % were hard
+  /* P&L is CONVENTIONAL green/red (a blue/orange scheme tested badly - percentages were hard
      to parse against these backgrounds) with a magnitude shade scale g1-g3/r1-r3. */
   --gain: #4ade80; --gain2: #22c55e; --loss: #f87171; --loss2: #ef4444;
   --success: #22c55e;          /* JS alias (candles etc.) -> green */

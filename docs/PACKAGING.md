@@ -86,7 +86,7 @@ Copied `dist/MarketForge/` to a short temp path and ran `MarketForge.exe`:
 
 ## Round 2 - first hands-on test feedback (2026-08-06 evening)
 
-Dustin ran the exe. Chat and the desk worked; voice failed both ways, and the
+The exe was run on a real desktop. Chat and the desk worked; voice failed both ways, and the
 Ollama wizard step was unwanted. Fixed:
 
 - **Voice in.** MediaRecorder produces webm/opus in WebView2 and Voicebox

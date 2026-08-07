@@ -27,7 +27,7 @@ sys.path.insert(0, str(BOT / "src"))
 
 import config  # noqa: E402  (this import also loads bot/.env)
 
-SCAN_HOURS = {10, 12, 14, 16}   # ET, weekdays
+SCAN_HOURS = config.RADAR_SCAN_HOURS   # ET, weekdays. Set RADAR_SCAN_HOURS in bot/.env
 
 
 def _now_et():

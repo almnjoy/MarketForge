@@ -9,6 +9,7 @@ Everything is stdlib. No Flask, no requests.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -25,7 +26,23 @@ def _root() -> Path:
 
 
 ROOT = _root()
-ENV = ROOT / "bot" / ".env"
+
+
+def _bot_home() -> Path:
+    """Where the user's .env lives.
+
+    NOT the program folder in a packaged build. app.py exports MF_BOT_HOME and
+    the wizard must write there, or an update would delete the keys it just
+    asked someone to type in. In a source checkout this is bot/ as before.
+    """
+    env = os.environ.get("MF_BOT_HOME")
+    return Path(env).expanduser().resolve() if env else ROOT / "bot"
+
+
+BOT_HOME = _bot_home()
+ENV = BOT_HOME / ".env"
+# The template ships with the PROGRAM, so it is always read from ROOT. The
+# workspace gets a seeded copy for reference, but this is the source of truth.
 TEMPLATE = ROOT / "bot" / ".env.template"
 
 TRADE = {"paper": "https://paper-api.alpaca.markets", "live": "https://api.alpaca.markets"}
@@ -180,7 +197,7 @@ def apply_answers(cur: dict, *, env_name: str, key: str, sec: str, feed,
         cur["LIVE_AUTO_ENABLED"] = "false"
     cur["MF_MODE"] = mode
     # Scoring is no longer a question: it rides the coding-agent CLI when one
-    # exists and degrades to alert-only when none does (2026-08-06, Dustin:
+    # exists and degrades to alert-only when none does. The intent:
     # no Ollama dependency). An OpenAI endpoint stays available as an env-only
     # override (RADAR_LLM_PROVIDER=openai in bot/.env) and is left untouched.
     cur["RADAR_USE_LLM"] = "true"

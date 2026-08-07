@@ -1,6 +1,6 @@
 # Live-narrated demo run
 
-One take. OBS rolls, the page speaks each line through Voicebox (Dustin's Kokoro
+One take. OBS rolls, the page speaks each line through Voicebox (a Kokoro
 profile) while the browser is driven to match, so narration is baked into the
 recording and there is nothing to edit afterward.
 

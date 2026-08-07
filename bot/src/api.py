@@ -186,6 +186,41 @@ def arm_trail(client, symbol, trail_pct, qty=None):
             "trail_percent": float(trail_pct), "id": t.get("id")}
 
 
+def _scoring_state():
+    """What is ACTUALLY doing catalyst triage right now.
+
+    `auto` resolves at call time (agent CLI if one is on PATH, else the HTTP
+    endpoint), so this has to ask the same question llm.classify() asks rather
+    than report the configured string and hope.
+    """
+    try:
+        import llm
+        agent_bin = llm._agent_bin()
+    except Exception:
+        agent_bin = None
+    provider = getattr(config, "RADAR_LLM_PROVIDER", "auto")
+    if not config.RADAR_USE_LLM:
+        effective, runtime, model, where = "off", "scoring disabled", "rules-only (no LLM)", ""
+    elif provider in ("auto", "agent") and agent_bin:
+        effective, runtime = "agent", "coding-agent CLI (local)"
+        model, where = config.RADAR_AGENT_MODEL, agent_bin
+    elif provider == "agent":
+        effective, runtime = "unavailable", "coding-agent CLI (NOT FOUND on PATH)"
+        model, where = config.RADAR_AGENT_MODEL, ""
+    elif config.RADAR_LLM_BASE_URL:
+        effective, runtime = "endpoint", "OpenAI-compatible endpoint"
+        model, where = config.RADAR_LLM_MODEL, config.RADAR_LLM_BASE_URL
+    else:
+        effective, runtime = "unavailable", "no scorer configured"
+        model, where = "rules-only (no LLM)", ""
+    return {"enabled": bool(config.RADAR_USE_LLM), "provider": provider,
+            "effective": effective, "runtime": runtime, "model": model, "where": where,
+            "min_score": config.RADAR_LLM_MIN_SCORE}
+
+
+_sweep_attempts: dict[str, int] = {}   # symbol -> failed arm attempts
+
+
 def _protect_worker():
     """Arms pending exits late, then sweeps for anything naked."""
     while True:
@@ -218,9 +253,26 @@ def _protect_worker():
                 if keep != rows:
                     _protect_save(keep)
 
+            # The sweep. This used to only print, which found the problem and then
+            # did nothing about it. Now it arms, because the one thing this app
+            # promises is that a position is never left without an exit.
             for u in unprotected_positions(client):
-                print(f"[protect] !! UNPROTECTED POSITION: {u['symbol']} qty {u['qty']} "
-                      f"@ {u['avg_entry']} - no working sell order")
+                sym = u["symbol"]
+                print(f"[protect] !! UNPROTECTED POSITION: {sym} qty {u['qty']} "
+                      f"@ {u['avg_entry']} - no working exit order")
+                if not config.SWEEP_AUTO_ARM:
+                    continue
+                if _sweep_attempts.get(sym, 0) >= config.SWEEP_MAX_ATTEMPTS:
+                    continue                      # already tried, stop shouting
+                try:
+                    res = arm_trail(client, sym, config.SWEEP_TRAIL_PCT)
+                    _sweep_attempts.pop(sym, None)
+                    print(f"[protect] sweep-armed {sym} at {config.SWEEP_TRAIL_PCT}%: {res}")
+                except Exception as e:
+                    n = _sweep_attempts.get(sym, 0) + 1
+                    _sweep_attempts[sym] = n
+                    print(f"[protect] sweep could not arm {sym} "
+                          f"(attempt {n}/{config.SWEEP_MAX_ATTEMPTS}): {e}")
         except Exception as e:
             print(f"[protect] worker error: {e}")
         time.sleep(30)
@@ -364,7 +416,18 @@ def api_config():
         "wash_sale_cooldown_days": config.WASH_SALE_COOLDOWN_DAYS,
         "fractional": config.FRACTIONAL,
         "radar_min_move_pct": config.RADAR_MIN_MOVE_PCT,
+        # Everything the Scan settings form reads back. Without these the form
+        # renders defaults instead of what the engine is actually running.
+        "radar_scan_hours": sorted(config.RADAR_SCAN_HOURS),
+        "radar_top_n": config.RADAR_TOP_N,
+        "radar_min_price_cents": config.RADAR_MIN_PRICE_CENTS,
+        "reddit_enabled": config.RADAR_REDDIT_ENABLED,
+        "reddit_cache_secs": config.RADAR_REDDIT_CACHE_SECS,
         "radar_llm_min_score": config.RADAR_LLM_MIN_SCORE,
+        # How movers actually get scored. This block did not exist, so the
+        # dashboard's Admin lane had no keys to read and rendered "rules-only
+        # (no LLM) / off" no matter what the engine was really doing.
+        "radar_scoring": _scoring_state(),
         "reddit_subs": config.RADAR_REDDIT_SUBS,
         "radar_auto": {
             "execute": config.RADAR_AUTO_EXECUTE,
@@ -500,6 +563,46 @@ def api_unprotected():
         return jsonify({"positions": unprotected_positions(AlpacaClient())})
     except Exception as e:
         return jsonify({"positions": [], "error": str(e)[:200]}), 502
+
+
+@app.route("/api/shutdown-check", methods=["GET"])
+def api_shutdown_check():
+    """Is it safe to stop the desk right now?
+
+    The exit guarantee is only guaranteed while this process is ALIVE. The queue
+    survives a restart and re-arms on boot, but between the fill and the next
+    boot the position sits at the broker with no stop on it. So closing the app
+    while an entry is working is the one action that can still reproduce the
+    original bug, and it deserves to be refused rather than warned about.
+    """
+    reasons = []
+    try:
+        with _protect_lock:
+            pending = _protect_load()
+    except Exception:
+        pending = []
+    for r in pending:
+        reasons.append(f"{r.get('symbol')} is queued for a {r.get('trail_pct')}% trail "
+                       f"and has not filled yet")
+    working = []
+    try:
+        client = AlpacaClient()
+        raw = client._req("GET", client.trade_base, "/v2/orders",
+                          params={"status": "open", "limit": 100}) or []
+        for o in raw:
+            if str(o.get("side")) == "buy" and str(o.get("status")) in (
+                    "new", "accepted", "partially_filled", "pending_new"):
+                working.append({"symbol": o.get("symbol"), "status": o.get("status"),
+                                "qty": o.get("qty"), "filled_qty": o.get("filled_qty")})
+                reasons.append(f"{o.get('symbol')} has a working BUY ({o.get('status')}) "
+                               f"that would fill with no stop behind it")
+        for u in unprotected_positions(client):
+            reasons.append(f"{u['symbol']} is open with NO working exit right now")
+    except Exception as e:
+        # Fail CLOSED. If we cannot see the broker we cannot promise it is safe.
+        reasons.append(f"could not reach the broker to check ({str(e)[:80]})")
+    return jsonify({"safe": not reasons, "reasons": reasons,
+                    "pending": pending, "working_buys": working})
 
 
 @app.route("/api/protect", methods=["POST"])
@@ -676,7 +779,7 @@ def _fred_macro():
 
 @app.get("/api/brief")
 def api_brief():
-    """On-demand market brief. Runs `claude -p` ON THE BOX using Dustin's Max
+    """On-demand market brief. Runs `claude -p` ON THIS MACHINE using the operator's
     SUBSCRIPTION token (no paid API key, no background waste). Narrates today's
     radar catalysts + movers into named emerging themes + a watch list."""
     conn = db.connect()

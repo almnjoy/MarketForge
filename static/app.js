@@ -2,6 +2,11 @@
    Data flows: /api/bot/* (the bot engine, embedded or remote), /api/panels + /api/panel
    (Workbench file bus), /api/chat* (copilot bus). */
 'use strict';
+// Server-provided settings the UI needs at runtime, filled from /api/meta on
+// boot. Declared HERE, above every consumer: as a const further down it sat in
+// the temporal dead zone for anything that ran earlier, which was fine only
+// because hot mic needs a click. Not a bet worth keeping.
+const META = {};
 const $ = (s) => document.querySelector(s);
 const fmt$ = (v, d = 2) => v == null ? '--' : '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 const cls = (v) => v > 0 ? 'up' : v < 0 ? 'down' : '';
@@ -247,8 +252,14 @@ $('#chartRanges').addEventListener('click', (e) => {
 
 async function loadOverview() {
   try {
+    // Orders come from the BROKER, not the local sqlite ledger. The ledger only
+    // knows what this app submitted and never learns what happened next, so it
+    // showed AEVA as pending_new long after it had filled and been protected.
+    // Falls back to the ledger if the broker call fails, so the panel degrades
+    // to stale-but-something rather than empty.
     const [s, pos, ords] = await Promise.all([
-      J('/api/bot/status'), J('/api/bot/positions').catch(() => []), J('/api/bot/orders').catch(() => [])]);
+      J('/api/bot/status'), J('/api/bot/positions').catch(() => []),
+      J('/api/bot/broker/orders?status=all').catch(() => J('/api/bot/orders').catch(() => []))]);
     if (s.error) throw new Error(s.error);
     const env = String(s.env || '?');
     const badge = $('#envBadge'); badge.textContent = env.toUpperCase();
@@ -272,8 +283,27 @@ async function loadOverview() {
     $('#positions').innerHTML = pos.length ? '<table><tr><th>sym</th><th class="r">qty</th><th class="r">entry</th><th class="r">now</th><th class="r">value</th><th class="r">P/L</th><th></th></tr>' +
       pos.map(p => `<tr><td><b>${esc(p.symbol)}</b></td><td class="r">${p.qty}</td><td class="r">${fmt$(p.avg_entry)}</td><td class="r">${fmt$(p.price)}</td><td class="r">${fmt$(p.market_value)}</td><td class="r ${cls(p.unrealized_pl)}">${fmt$(p.unrealized_pl)}</td><td class="r"><button class="btn sm" onclick="openTicket('${esc(p.symbol)}','sell')">Sell</button></td></tr>`).join('') + '</table>'
       : '<span class="dim">no open positions</span>';
-    $('#orders').innerHTML = ords.length ? '<table><tr><th>sym</th><th>side</th><th class="r">qty</th><th>status</th><th class="r">at</th></tr>' +
-      ords.slice(0, 10).map(o => `<tr><td><b>${esc(o.symbol)}</b></td><td>${esc(o.side)}</td><td class="r">${o.qty ?? '-'}</td><td>${esc(o.status)}</td><td class="r dim">${esc((o.updated_at || o.created_at || '').slice(5, 16).replace('T', ' '))}</td></tr>`).join('') + '</table>'
+    // A 502 from the broker returns {error}, not an array - guard before .length.
+    const olist = Array.isArray(ords) ? ords : [];
+    // "kind" makes a working exit legible at a glance: a trailing_stop with its
+    // width is the single most reassuring row on this screen.
+    const kind = o => {
+      const t = String(o.type || o.order_type || '').replace(/_/g, ' ');
+      if (o.trail_percent) return `trail ${(+o.trail_percent).toFixed(0)}%`;
+      return t || '-';
+    };
+    const fillCol = o => (o.filled_qty != null && +o.filled_qty !== +o.qty)
+      ? `${o.filled_qty}/${o.qty}` : (o.qty ?? '-');
+    $('#orders').innerHTML = olist.length ? '<table><tr><th>sym</th><th>side</th><th>kind</th>' +
+      '<th class="r">qty</th><th>status</th><th class="r">at</th></tr>' +
+      olist.slice(0, 10).map(o => {
+        const st = String(o.status || '');
+        const stc = st === 'filled' ? 'gain' : (/cancel|reject|expired/.test(st) ? 'dim' : '');
+        return `<tr><td><b>${esc(o.symbol)}</b></td><td>${esc(o.side)}</td>` +
+          `<td class="dim">${esc(kind(o))}</td><td class="r">${esc(String(fillCol(o)))}</td>` +
+          `<td class="${stc}">${esc(st)}</td><td class="r dim">` +
+          `${esc((o.submitted_at || o.updated_at || o.created_at || '').slice(5, 16).replace('T', ' '))}</td></tr>`;
+      }).join('') + '</table>'
       : '<span class="dim">no orders yet</span>';
     const cfg = await J('/api/bot/config').catch(() => null);
     if (cfg?.radar_auto) {
@@ -777,6 +807,148 @@ async function loadChat() {
   }
 }
 
+/* ---------- scan settings ----------
+   What each radar looks at, and how often. Lives ON the radar tabs, because
+   that is where you are standing when you wonder why nothing is showing - and
+   the usual answer is a floor set higher than the day is moving.
+   Applying rewrites bot/.env and restarts the engine, so it refuses while an
+   entry is working, same as stopping the desk. */
+const SCAN_FIELDS = {
+  catalyst: [
+    ['RADAR_SCAN_HOURS', 'Scan hours (ET)', 'text', '10,12,14,16',
+      'When the radar runs, weekdays. Comma separated, 0-23.'],
+    ['RADAR_MIN_MOVE_PCT', 'Min move %', 'number', '5',
+      'How big a move has to be before it is looked at. Raise on wild days, lower on quiet ones.'],
+    ['RADAR_TOP_N', 'Movers per scan', 'number', '20',
+      'How many names come back from the screener each pass.'],
+    ['RADAR_MIN_PRICE_CENTS', 'Price floor (cents)', 'number', '300',
+      'Skip anything under this. The sub-$3 tier is mostly halts and spikes.'],
+    ['RADAR_LLM_MIN_SCORE', 'Alert score floor', 'number', '60',
+      'Only push alerts at or above this 0-100 catalyst score.'],
+  ],
+  retail: [
+    ['RADAR_REDDIT_SUBS', 'Subreddits', 'text', 'wallstreetbets,swingtrading,stocks',
+      'Comma separated, no r/ prefix needed.'],
+    ['RADAR_REDDIT_CACHE_SECS', 'Refresh (seconds)', 'number', '600',
+      'One sub refreshes per cycle, round-robin, so the full sweep takes this times the number of subs.'],
+    ['RADAR_REDDIT_ENABLED', 'Enabled', 'bool', 'true',
+      'Turn the retail layer off entirely.'],
+  ],
+};
+
+async function renderScan(which) {
+  const box = $(which === 'catalyst' ? '#scanCatalyst' : '#scanRetail');
+  if (!box) return;
+  const cfg = await J('/api/bot/config').catch(() => ({}));
+  const cur = {
+    RADAR_SCAN_HOURS: (cfg.radar_scan_hours || []).join(',') || '10,12,14,16',
+    RADAR_MIN_MOVE_PCT: cfg.radar_min_move_pct,
+    RADAR_TOP_N: cfg.radar_top_n,
+    RADAR_MIN_PRICE_CENTS: cfg.radar_min_price_cents,
+    RADAR_LLM_MIN_SCORE: cfg.radar_llm_min_score,
+    RADAR_REDDIT_SUBS: (cfg.reddit_subs || []).join(','),
+    RADAR_REDDIT_CACHE_SECS: cfg.reddit_cache_secs,
+    RADAR_REDDIT_ENABLED: cfg.reddit_enabled,
+  };
+  box.innerHTML = `<div class="scan-grid">` + SCAN_FIELDS[which].map(([k, label, type, dflt, help]) => {
+    const v = cur[k] ?? dflt;
+    const input = type === 'bool'
+      ? `<select data-k="${k}"><option value="true"${String(v) === 'true' ? ' selected' : ''}>on</option>` +
+        `<option value="false"${String(v) === 'false' ? ' selected' : ''}>off</option></select>`
+      : `<input data-k="${k}" type="${type}" value="${esc(String(v))}" ${type === 'number' ? 'step="any"' : ''}>`;
+    return `<label class="scan-f"><span class="scan-l">${esc(label)}</span>${input}
+      <span class="scan-h">${esc(help)}</span></label>`;
+  }).join('') + `</div>
+    <div class="scan-act"><span class="scan-msg dim"></span>
+      <button class="btn" data-reload>Reload</button>
+      <button class="btn side on" data-apply>Apply + restart engine</button></div>`;
+
+  box.querySelector('[data-reload]').onclick = () => renderScan(which);
+  box.querySelector('[data-apply]').onclick = async () => {
+    const msg = box.querySelector('.scan-msg');
+    const settings = {};
+    box.querySelectorAll('[data-k]').forEach(el => settings[el.dataset.k] = el.value);
+    msg.textContent = 'applying...'; msg.style.color = '';
+    const r = await fetch('/api/scan-settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings })
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) {
+      // 409 means an entry is working. Say so plainly rather than "failed".
+      msg.textContent = (j.reasons || j.errors || [j.error || 'failed']).join(' · ');
+      msg.style.color = 'var(--loss)';
+      return;
+    }
+    msg.textContent = ''; notify(j.note || 'scan settings applied', 'ok');
+    setTimeout(() => renderScan(which), 2500);   // let the engine come back up
+  };
+}
+
+function toggleScan(which) {
+  const box = $(which === 'catalyst' ? '#scanCatalyst' : '#scanRetail');
+  if (!box) return;
+  const showing = !box.classList.contains('hidden');
+  box.classList.toggle('hidden', showing);
+  if (!showing) renderScan(which);
+}
+
+/* ---------- staged trade ----------
+   The copilot WRITES staged-trade.json; it never places the order. This panel
+   is the whole stage-and-confirm contract made visible: it proposes with its
+   reasoning attached, and the trade does not exist until you click.
+   Before this existed the copilot improvised a trade button inside a Workbench
+   panel, which was a correct read of a missing feature. */
+async function loadStaged() {
+  const panel = $('#stagedPanel'), box = $('#staged');
+  if (!panel || !box) return;
+  const d = await J('/api/staged').catch(() => null);
+  const t = d && d.staged;
+  if (!t) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  const side = String(t.side || 'buy').toLowerCase();
+  const size = t.notional != null ? fmt$(t.notional, 0) : `${t.qty} sh`;
+  const trail = t.trail_pct != null ? `${(+t.trail_pct).toFixed(0)}%` : 'none';
+  const mins = Math.round((t.age_s || 0) / 60);
+  box.innerHTML = `
+    <div class="stg-head">
+      <span class="stg-side ${side}">${esc(side.toUpperCase())}</span>
+      <b class="mono stg-sym">${esc(t.symbol)}</b>
+      <span class="dim mono">${esc(size)} · trail ${esc(trail)}</span>
+      <span class="right dim">staged ${mins}m ago</span>
+    </div>
+    ${t.why ? `<div class="stg-why">${esc(t.why)}</div>` : ''}
+    ${t.expired
+      ? `<div class="stg-stale">This was staged ${mins} minutes ago and has expired.
+         Prices have moved; ask for a fresh read before acting.</div>`
+      : ''}
+    <div class="stg-act">
+      <button class="btn" onclick="dismissStaged()">Dismiss</button>
+      ${t.expired
+        ? `<button class="btn" onclick="chartTo('${esc(t.symbol)}')">Chart</button>`
+        : `<button class="btn side on" onclick="confirmStaged()">Confirm ${esc(side)} ${esc(t.symbol)}</button>`}
+    </div>`;
+  window.__staged = t;
+}
+
+async function dismissStaged() {
+  await fetch('/api/staged/clear', { method: 'POST' }).catch(() => {});
+  loadStaged();
+}
+
+async function confirmStaged() {
+  const t = window.__staged;
+  if (!t) return;
+  // Re-open the normal ticket rather than firing straight from the card. The
+  // ticket is where size and the trail get confirmed against a CURRENT quote,
+  // and one extra deliberate click before real money is the right price.
+  openTicket(t.symbol, String(t.side || 'buy').toLowerCase());
+  const n = $('#tkNotional'), q = $('#tkQty'), tr = $('#tkTrail');
+  if (n && t.notional != null) n.value = t.notional;
+  if (q && t.qty != null) q.value = t.qty;
+  if (tr && t.trail_pct != null) tr.value = t.trail_pct;
+}
+
 /* ---------- naked positions ----------
    A position with no working sell order. Polled with the overview; arming is a
    REAL order, so it always costs a deliberate click and a confirm. */
@@ -801,7 +973,7 @@ window.protectPos = async (symbol, trail = 10) => {
   }).catch((e) => ({ ok: false, error: String(e) }));
   notify(r.ok ? `${symbol}: ${trail}% trail armed (${r.qty} sh)` : `protect failed: ${r.error}`,
          r.ok ? 'ok' : 'err');
-  loadNaked(); loadOverview();
+  loadNaked(); loadStaged(); loadOverview();
 };
 
 /* ---------- ADMIN: read-only inventory ----------
@@ -813,12 +985,75 @@ const kb = (b) => b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB' : b >= 1000 ? Math.rou
 const tok = (n) => n == null ? '--' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M'
   : n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n);
 
+// Mirrors the server's EDITABLE allowlist. The server is the one that enforces
+// it; this only decides which rows show a button.
+const EDITABLE_FILES = new Set(['RULES.md', 'memory.md', 'CLAUDE.md', 'PROMPTS.md', 'config.json']);
+
+async function editFile(name) {
+  const d = await J('/api/file?name=' + encodeURIComponent(name)).catch(() => null);
+  if (!d || d.error) return notify('could not open ' + name, 'err');
+  const wrap = document.createElement('div');
+  wrap.className = 'modal';                       // same shell as the trade ticket
+  wrap.innerHTML = `<div class="modal-card fileedit">
+    <div class="panel-h">EDIT <span class="mono">${esc(name)}</span>
+      <button class="btn sm right" data-x>✕</button></div>
+    <div class="dim" style="margin:-4px 0 8px">${esc(d.what || '')}</div>
+    <textarea class="fileta mono" spellcheck="false"></textarea>
+    <div class="dim mono" style="font-size:11px;margin-top:6px">${esc(d.path || '')}</div>
+    <div class="tk-row" style="justify-content:flex-end;align-items:center;gap:10px">
+      <span data-msg class="dim"></span>
+      <button class="btn" data-x>Cancel</button>
+      <button class="btn side on" data-save>Save</button>
+    </div></div>`;
+  document.body.appendChild(wrap);
+  const ta = wrap.querySelector('.fileta');
+  const msg = wrap.querySelector('[data-msg]');
+  ta.value = d.text || '';
+  const original = ta.value;
+  ta.focus();
+  const close = () => wrap.remove();
+  wrap.querySelectorAll('[data-x]').forEach(b => b.onclick = close);
+  // Backdrop click closes only when nothing has been typed. Losing a rewritten
+  // trading plan to a stray click outside the box is not a fair trade.
+  wrap.addEventListener('mousedown', e => {
+    if (e.target === wrap && ta.value === original) close();
+  });
+  wrap.querySelector('[data-save]').onclick = async () => {
+    msg.textContent = 'saving...'; msg.style.color = '';
+    try {
+      const r = await fetch('/api/file', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, text: ta.value })
+      });
+      const j = await r.json().catch(() => ({}));
+      // fetch does NOT throw on 4xx/5xx. Checking r.ok is the difference between
+      // "invalid JSON, not saved" and the user walking away thinking it saved.
+      if (!r.ok || !j.ok) {
+        msg.textContent = j.error || ('save failed (' + r.status + ')');
+        msg.style.color = 'var(--loss)';
+        return;
+      }
+      notify(j.note || (name + ' saved'), 'ok');
+      close();
+      loadAdmin();
+    } catch (e) {
+      msg.textContent = String(e).slice(0, 120);
+      msg.style.color = 'var(--loss)';
+    }
+  };
+}
+
 async function loadAdmin() {
   const d = await J('/api/admin').catch(() => null);
   if (!d) { $('#adminLanes').innerHTML = '<span class="dim">admin unavailable</span>'; return; }
   const r = d.runtime || {}, u = d.usage || {};
 
+  // Version lives here, not just in the console banner nobody reads. If a newer
+  // release exists the sub-line says so; there is no auto-download.
+  const up = r.update || {};
   $('#adminRuntime').innerHTML = [
+    ['Version', r.version ? `v${r.version}` : '--',
+      up.available ? `v${up.latest} available` : 'up to date'],
     ['Uptime', dur(r.uptime_s), r.started || ''],
     ['Mode', r.embedded ? 'embedded' : 'split', r.embedded ? 'engine runs in-process' : r.bot_base],
     ['Python', r.python || '--', r.platform || ''],
@@ -842,13 +1077,18 @@ async function loadAdmin() {
         `<td class="r mono">${l.last_ms ? (l.last_ms / 1000).toFixed(0) + 's' : '--'}</td></tr>`;
     }).join('') + '</table>';
 
+  // Editable files get an Edit button. Anything not on the server's allowlist
+  // (bot/.env, the jsonl logs) stays read-only here on purpose.
   $('#adminFiles').innerHTML = '<table class="admin"><tr><th>file</th><th>what it does</th>' +
-    '<th class="r">size</th><th class="r">changed</th></tr>' +
+    '<th class="r">size</th><th class="r">changed</th><th></th></tr>' +
     (d.files || []).map(f => `<tr><td class="mono ${f.exists ? '' : 'dim'}">${esc(f.label)}` +
       `${f.exists ? '' : ' <span class="dim">(missing)</span>'}</td>` +
       `<td class="dim">${esc(f.what)}</td>` +
       `<td class="r mono">${f.exists ? kb(f.bytes) : '--'}</td>` +
-      `<td class="r dim mono">${esc(f.mtime || '--')}</td></tr>`).join('') + '</table>';
+      `<td class="r dim mono">${esc(f.mtime || '--')}</td>` +
+      `<td class="r">${EDITABLE_FILES.has(f.label)
+        ? `<button class="btn sm" onclick="editFile('${esc(f.label)}')">Edit</button>` : ''}</td>` +
+      `</tr>`).join('') + '</table>';
 
   const t = d.trading || {};
   $('#adminTrading').innerHTML = '<table class="admin">' + [
@@ -1092,7 +1332,12 @@ async function transcribe(blob) {
   }
 }
 
-/* push-to-talk: click = record, click again = stop -> transcribe -> send */
+/* Dictation: click = record, click again = stop -> transcribe -> DRAFT.
+   It does NOT send. Speaking a thought and sending it are two decisions, and
+   this desk places real orders, so the text lands in the composer and waits for
+   you. Dictate again and it appends, so you can build a message in pieces.
+   Auto-send is what HOT MIC is for - that mode is an explicit opt-in to a
+   conversation. */
 let ptt = null, pttBusy = false;
 async function pttToggle() {
   if (ptt) {
@@ -1101,13 +1346,19 @@ async function pttToggle() {
     const blob = stopWav(rec);
     if (!hotOn && !hotProc) dropMic();            // last consumer: mic light off
     if (rec.chunks.length * 4096 / rec.rate < 0.35) return;   // click-click, not speech
-    $('#chatInput').placeholder = 'transcribing...';
+    const box = $('#chatInput');
+    box.placeholder = 'transcribing...';
     try {
       const text = await transcribe(blob);
-      $('#chatInput').value = text;
-      if (text) sendChat();
+      if (text) {
+        const had = box.value.trim();
+        box.value = had ? had + ' ' + text : text;   // append, never clobber
+        box.focus();
+        box.setSelectionRange(box.value.length, box.value.length);
+        box.dispatchEvent(new Event('input'));       // let the composer autosize
+      }
     } catch (e) { notify('voice: ' + e.message, 'err'); }
-    $('#chatInput').placeholder = 'Ask anything about the market, or tell me what to build...';
+    box.placeholder = 'Ask anything about the market, or tell me what to build...';
     return;
   }
   if (pttBusy) return;                            // getMic() still awaiting
@@ -1135,7 +1386,13 @@ async function hotStart() {
   if (hotProc) { try { hotProc.disconnect(); } catch {} }   // never two VAD taps
   hotCtx = new (window.AudioContext || window.webkitAudioContext)();
   const rate = hotCtx.sampleRate;
-  const THRESH = 0.015, SILENCE_MS = 1200, MIN_MS = 450, MAX_MS = 25000, PRE = 4;
+  // SILENCE_MS is the endpointing hold: how long you have to stop talking before
+  // the utterance is considered finished and sent. 1200ms cut people off
+  // mid-thought and shipped the tail of a sentence as a second message, which is
+  // where the stray words came from. 1800 is a natural pause without feeling
+  // laggy. Tune with "voice_endpoint_ms" in config.json.
+  const SILENCE_MS = Math.max(600, +(META.voice_endpoint_ms || 1800));
+  const THRESH = 0.015, MIN_MS = 450, MAX_MS = 25000, PRE = 4;
   let ring = [], talking = false, buf = [], lastVoice = 0, started = 0, echo = false;
   hotProc = hotCtx.createScriptProcessor(4096, 1, 1);
   hotProc.onaudioprocess = (e) => {
@@ -1228,6 +1485,8 @@ async function hotToggle(next = !hotOn) {
   } catch (e) { notify('mic: ' + e.message, 'err'); hotToggle(false); }
 }
 $('#hotMic').onclick = () => hotToggle();
+$('#radarSettings').onclick = () => toggleScan('catalyst');
+$('#retailSettings').onclick = () => toggleScan('retail');
 sttHealth().then(() => {
   if (!sttOk && !SR && !hasAudio) {
     $('#micBtn').title = 'voice needs Voicebox, or Chrome/Edge';
@@ -1468,14 +1727,19 @@ vbHealth(); setInterval(vbHealth, 60000);
 loadSavedList(); setInterval(loadSavedList, 30000);
 loadMemory(); loadJournal(); setInterval(() => { if (document.querySelector('#view-journal.on')) loadJournal($('#jDay').value); }, 20000);
 J('/api/meta').then(m => {
+  Object.assign(META, m);
   window._user = m.user || 'trader';
   window.__mfUser = m.user || 'You';        // avatar initials in the chat
   initTheme(m.theme);                        // config default, if nothing saved locally
   setTimeout(() => { if ($('#ttsToggle').checked) speakText(`Welcome back, ${window._user}.`); }, 1200);
 }).catch(() => {});
-loadOverview(); loadChart(); pickDefaultChart(); loadRadar(); loadReddit(); loadPanels(true); loadRules(); loadChat(); loadNaked();
+loadOverview(); loadChart(); pickDefaultChart(); loadRadar(); loadReddit(); loadPanels(true); loadRules(); loadChat(); loadNaked(); loadStaged();
 setInterval(loadOverview, 15000);
 setInterval(loadNaked, 20000);   // an unarmed position must surface fast
+// The copilot writes staged-trade.json mid-turn, so this needs the same cadence
+// as panels. Without it the card only appeared on a page refresh, which made a
+// staged trade look like it had silently failed.
+setInterval(loadStaged, 2500);
 setInterval(loadRadar, 30000);
 setInterval(loadReddit, 60000);
 setInterval(loadChat, 2500);

@@ -6,6 +6,10 @@ chat-outbox.jsonl
 journal.jsonl
 usage.jsonl
 memory.md
+# YOUR trading plan. Seeded from RULES.template.md on first run, then yours.
+# Shipping this would hand every user someone else's strategy as if it were
+# the app's opinion, and an update would overwrite what they wrote.
+RULES.md
 saved-workbenches/
 panels/*
 !panels/00-welcome.html
@@ -36,3 +40,11 @@ bot/.env.bak*
 
 # personal trading playbooks - not product
 BRAIN-*.md
+staged-trade.json
+
+# personal agent-lane charter - how ONE person works, not product
+.claude/SCOPED-SPACE-RULES.md
+
+# video cut rigs: big binaries, and the source captures can contain live keys.
+# Publishing a cut is a separate, deliberate decision.
+demo/edit-*/

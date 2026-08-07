@@ -1,5 +1,5 @@
 {
-  "_comment": "bot_base is only used when NOT embedded. Rocker was retired 2026-08-06; everything runs locally now, so this points at the in-process engine.",
+  "_comment": "bot_base is only used when NOT embedded. Everything runs locally, so this points at the in-process engine.",
   "bot_base": "http://127.0.0.1:8796",
   "port": 8410,
   "voicebox_url": "http://127.0.0.1:17493",

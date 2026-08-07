@@ -199,8 +199,12 @@ td.r, th.r { text-align: right; }
    Centered reading column. Assistant messages are full-width and UNBOXED (the
    two-sided bubble layout made every reply feel like a chat app notification);
    only the user's own turns get a bubble. Composer is pinned at the bottom. */
-.chatlayout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 18px;
-  max-width: 1140px; margin: 0 auto; }
+/* Wider than the old 1140px centered column, and the gutter between the day
+   list and the conversation is tighter so the text starts right off the menu
+   instead of floating in the middle with air on both sides. The scrollbar
+   still rides the right edge. */
+.chatlayout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 10px;
+  max-width: 1400px; margin: 0 auto; }
 @media (max-width: 900px) { .chatlayout { grid-template-columns: 1fr; }
   .chatside { display: none; } }
 .chatside { display: flex; flex-direction: column; gap: 6px; padding-top: 2px;
@@ -217,7 +221,9 @@ td.r, th.r { text-align: right; }
 .chatwrap { display: flex; flex-direction: column; height: calc(100vh - 172px);
   min-width: 0; }
 .chathead { display: flex; align-items: center; gap: 10px; padding: 0 4px 10px; }
-.chatlog { flex: 1; overflow-y: auto; padding: 6px 4px 18px; background: transparent;
+/* No left padding: the conversation butts up against the menu edge. The right
+   padding is for the scrollbar, so text never runs under it. */
+.chatlog { flex: 1; overflow-y: auto; padding: 6px 14px 18px 0; background: transparent;
   border: 0; border-radius: 0; margin: 0; scroll-behavior: smooth; }
 .turn { display: flex; gap: 13px; padding: 14px 0; }
 .turn .who { width: 27px; height: 27px; border-radius: 99px; flex-shrink: 0;
@@ -420,7 +426,51 @@ body.has-reader { overflow: hidden; }
 .modal.hidden { display: none; }
 .modal-card { background: var(--panel); border: 1px solid rgba(255,106,0,.6); border-radius: var(--radius);
   padding: 20px; width: 440px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+/* ---------- scan settings ---------- */
+.scanbox { border-bottom: 1px solid var(--border); padding: 4px 0 16px; margin-bottom: 14px; }
+.scanbox.hidden { display: none; }
+.scan-grid { display: grid; gap: 16px 22px;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.scan-f { display: flex; flex-direction: column; gap: 5px; }
+.scan-l { font: 600 11px var(--sans); letter-spacing: .07em; text-transform: uppercase;
+  color: var(--dim); }
+.scan-f input, .scan-f select { background: rgba(11,15,22,.7); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+  font: 13px var(--mono); width: 100%; box-sizing: border-box; }
+.scan-f input:focus, .scan-f select:focus { outline: none; border-color: var(--primary); }
+.scan-h { font-size: 11.5px; line-height: 1.45; color: var(--faint, var(--dim)); }
+.scan-act { display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+  margin-top: 16px; }
+.scan-msg { font-size: 12.5px; }
+
+/* ---------- staged trade ----------
+   Accent-edged so a pending proposal is visibly different from live account
+   data, and impossible to mistake for something that already happened. */
+.panel.staged { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.panel.staged.hidden { display: none; }
+.stg-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.stg-side { font: 700 11px var(--sans); letter-spacing: .08em; padding: 2px 8px;
+  border-radius: 99px; border: 1px solid; }
+.stg-side.buy { color: var(--gain); border-color: color-mix(in srgb, var(--gain) 55%, transparent); }
+.stg-side.sell { color: var(--loss); border-color: color-mix(in srgb, var(--loss) 55%, transparent); }
+.stg-sym { font-size: 19px; }
+.stg-why { margin: 10px 0 0; font-size: 14px; line-height: 1.6; color: var(--fg);
+  border-left: 2px solid var(--border); padding-left: 11px; }
+.stg-stale { margin-top: 10px; padding: 9px 11px; border-radius: 9px; font-size: 13px;
+  color: var(--warn, var(--loss));
+  background: color-mix(in srgb, var(--loss) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--loss) 35%, transparent); }
+.stg-act { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
 .modal-card .panel-h { font-size: .95rem; }
+/* File editor. Wider and taller than the trade ticket: these are documents, and
+   editing a trading plan through a 4-line box is how you end up not editing it. */
+.modal-card.fileedit { width: min(940px, 94vw); }
+.fileta { width: 100%; height: min(58vh, 620px); resize: vertical; box-sizing: border-box;
+  background: rgba(11,15,22,.75); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px; font-size: 13px; line-height: 1.62;
+  tab-size: 2; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+.fileta:focus { outline: none; border-color: var(--primary); }
 #tkSym { font-family: var(--serif); font-weight: 700; font-style: normal; font-size: 1.2rem; color: var(--fg); }
 .tk-row { display: flex; gap: 10px; align-items: center; margin: 12px 0; flex-wrap: wrap; }
 .tk-row label { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 6px; font-family: Georgia, serif; }

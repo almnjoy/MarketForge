@@ -64,6 +64,11 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
         <div id="chartNews" class="newslist"></div>
       </div>
       <div>
+        <!-- Filled by the copilot writing staged-trade.json. Hidden when empty. -->
+        <div id="stagedPanel" class="panel staged hidden">
+          <div class="panel-h">STAGED_TRADE <span class="dim">the copilot proposes, you decide</span></div>
+          <div id="staged"></div>
+        </div>
         <div class="panel">
           <div class="panel-h">POSITIONS <span id="posCount" class="dim"></span></div>
           <div id="positions"></div>
@@ -81,7 +86,9 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
     <div class="panel">
       <div class="panel-h">CATALYST_RADAR <span id="radarCount" class="dim"></span>
         <span id="lastScan" class="dim right"></span>
-        <button id="radarRefresh" class="btn sm" style="margin-left:10px">Re-scan</button></div>
+        <button id="radarSettings" class="btn sm" style="margin-left:10px">⚙ Scan settings</button>
+        <button id="radarRefresh" class="btn sm" style="margin-left:6px">Re-scan</button></div>
+      <div id="scanCatalyst" class="scanbox hidden"></div>
       <div id="radar" class="cards"></div>
     </div>
   </section>
@@ -89,7 +96,9 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
   <!-- RETAIL RADAR (reddit) -->
   <section id="view-retail" class="view">
     <div class="panel">
-      <div class="panel-h">RETAIL_RADAR · Reddit <span id="redditSubs" class="dim"></span></div>
+      <div class="panel-h">RETAIL_RADAR · Reddit <span id="redditSubs" class="dim"></span>
+        <button id="retailSettings" class="btn sm right">⚙ Scan settings</button></div>
+      <div id="scanRetail" class="scanbox hidden"></div>
       <div id="reddit" class="cards"></div>
     </div>
   </section>
@@ -247,7 +256,7 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
         <div class="composer-box">
           <textarea id="chatInput" rows="1" placeholder="Ask anything about the market, or tell me what to build..."></textarea>
           <div class="composer-actions">
-            <button id="micBtn" class="cbtn" title="hold to talk (Chrome)">🎤</button>
+            <button id="micBtn" class="cbtn" title="Dictate: click to start, click to stop. Text lands in the box - it does not send.">🎤</button>
             <button id="chatSend" class="cbtn send" title="Send (Enter)">↑</button>
           </div>
         </div>

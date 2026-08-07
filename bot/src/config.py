@@ -14,9 +14,17 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# --- Repo layout -----------------------------------------------------------
+# --- Layout: CODE vs the user's DATA ---------------------------------------
+# REPO_ROOT is where the engine's code lives. BOT_HOME is where the user's keys
+# and ledger live. In a source checkout they are the same folder and nothing
+# changes. In a packaged build app.py sets MF_BOT_HOME to a directory OUTSIDE
+# the program folder, so updating the app is "delete it, unzip the new one" and
+# the trade ledger, the .env and the pending-exit queue are never in the blast
+# radius of an upgrade.
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = REPO_ROOT / "data"
+_bot_home = os.environ.get("MF_BOT_HOME")
+BOT_HOME = Path(_bot_home).expanduser().resolve() if _bot_home else REPO_ROOT
+DATA_DIR = BOT_HOME / "data"
 RESEARCH_DIR = DATA_DIR / "research"
 ANALYSIS_DIR = DATA_DIR / "analysis"
 CANDIDATES_PATH = DATA_DIR / "candidates.json"
@@ -39,12 +47,17 @@ def _load_dotenv(path: Path) -> None:
         # them straight into int() and the engine died on boot. Strip a
         # whitespace-preceded # tail before anything else.
         val = val.strip()
-        if " #" in val:
+        if val.startswith("#"):
+            # "KEY=      # why it is blank" - the whole value is a comment, so
+            # the value is empty. Without this the comment text itself became
+            # the value and the next float()/int() killed the engine on boot.
+            val = ""
+        elif " #" in val:
             val = val.split(" #", 1)[0]
         os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
 
 
-_load_dotenv(REPO_ROOT / ".env")
+_load_dotenv(BOT_HOME / ".env")
 
 
 def _get(name, default=None):
@@ -156,6 +169,24 @@ API_TOKEN = _get("API_TOKEN", "") or ""
 # --- Catalyst radar --------------------------------------------------------
 # Awareness tool: flags big session movers + any fresh news catalyst, with a
 # scale-out/trailing-stop reminder. It ALERTS, it does not trade.
+def _hours(raw, default):
+    """Parse "10,12,14,16" into a set of valid hours, ignoring junk.
+
+    Fails to the DEFAULT rather than to an empty set: an empty set means the
+    scheduler silently never runs, and a scanner that quietly stops scanning is
+    worse than one on the wrong schedule.
+    """
+    out = set()
+    for part in str(raw or "").split(","):
+        part = part.strip()
+        if part.isdigit() and 0 <= int(part) <= 23:
+            out.add(int(part))
+    return out or set(default)
+
+
+# When the radar scans, ET, weekdays. Was hardcoded in run_bot.py, so "how often
+# does this look at the market" was the one scanner setting nobody could change.
+RADAR_SCAN_HOURS = _hours(_get("RADAR_SCAN_HOURS", ""), {10, 12, 14, 16})
 RADAR_TOP_N = int(_get("RADAR_TOP_N", 20))
 RADAR_MIN_MOVE_PCT = float(_get("RADAR_MIN_MOVE_PCT", 5.0))   # percent, e.g. 5 = 5%
 # Price floor filters out the low-float penny/halted junk that dominates raw
@@ -177,7 +208,7 @@ RADAR_AGENT_TIMEOUT = float(_get("RADAR_AGENT_TIMEOUT", 90))
 RADAR_LLM_BASE_URL = _get("RADAR_LLM_BASE_URL", "http://127.0.0.1:11434/v1") or ""
 RADAR_LLM_MODEL = _get("RADAR_LLM_MODEL", "qwen2.5:3b-16k") or ""
 
-# Reddit retail-buzz layer (2026-08-05, per Dustin: "Reddit is still KING on
+# Reddit retail-buzz layer. The rationale: reddit is still where a lot of
 # finding those crazy news things / retail holds"). Subs are comma-separated.
 RADAR_REDDIT_ENABLED = (_get("RADAR_REDDIT_ENABLED", "true") or "true").lower() == "true"
 RADAR_REDDIT_SUBS = [x.strip() for x in (_get("RADAR_REDDIT_SUBS", "wallstreetbets,swingtrading,stocks") or "").split(",") if x.strip()]
@@ -192,7 +223,7 @@ RADAR_AUTO_MIN_SCORE = int(_get("RADAR_AUTO_MIN_SCORE", 80))      # only >= this
 RADAR_AUTO_NOTIONAL_CENTS = int(_get("RADAR_AUTO_NOTIONAL_CENTS", 20000))  # $200/catalyst
 RADAR_AUTO_MAX_POSITIONS = int(_get("RADAR_AUTO_MAX_POSITIONS", 8))
 
-# --- LIVE training-wheels auto-trading (2026-08-05, Dustin: "minimal auto
+# --- LIVE auto-trading, deliberately minimal ("a little automation
 # trades while I keep researching strategy"). live entries are BRACKET orders -
 # the exit exists the moment the entry does (the paper sprint's lesson: entries
 # without sell points just ride). Everything below fails closed.
@@ -203,10 +234,27 @@ RADAR_AUTO_TP_PCT = float(_get("RADAR_AUTO_TP_PCT", 0.12))      # take-profit +1
 RADAR_AUTO_SL_PCT = float(_get("RADAR_AUTO_SL_PCT", 0.06))      # stop-loss -6%
 RADAR_AUTO_MIN_PRICE_CENTS = int(_get("RADAR_AUTO_MIN_PRICE_CENTS", 300))  # $3 floor: ZYBT-class spiker junk lives below
 # Exit style: "trail" = buy, confirm fill, attach a GTC trailing stop (follows
-# the peak - Dustin's "goes high then dips" ask; never round-trip a winner).
+# the peak - for names that run then fade; never round-trip a winner).
 # "bracket" = fixed take-profit + stop-loss attached at entry.
 RADAR_AUTO_EXIT = (_get("RADAR_AUTO_EXIT", "trail") or "trail").lower()
 RADAR_AUTO_TRAIL_PCT = float(_get("RADAR_AUTO_TRAIL_PCT", 0.10))  # sell 10% off the high-water mark
+
+# --- the naked-position sweep ----------------------------------------------
+# The 30s sweep used to only PRINT that a position had no working exit. It found
+# the problem and then did nothing about it, which is the same outcome as not
+# looking. With this on it also ARMS a trailing stop on anything it finds naked.
+#
+# UNITS TRAP: the queue and arm_trail() take a PERCENT (10.0). RADAR_AUTO_TRAIL_PCT
+# is a FRACTION (0.10). Multiply, or you will arm a 0.1% trail and get stopped out
+# by the spread on the next tick.
+SWEEP_AUTO_ARM = (_get("SWEEP_AUTO_ARM", "true") or "true").lower() == "true"
+# `or` the default in, because a key PRESENT BUT BLANK ("SWEEP_TRAIL_PCT=") makes
+# _get return "" and float("") raises - which would stop the engine booting over
+# an empty line in a config file. Blank means "use the default", not "crash".
+SWEEP_TRAIL_PCT = float(_get("SWEEP_TRAIL_PCT", "") or RADAR_AUTO_TRAIL_PCT * 100)
+# Give up on a symbol after this many failed arm attempts so one un-armable
+# position (odd asset class, halted, fractional qty) cannot spam the log forever.
+SWEEP_MAX_ATTEMPTS = int(_get("SWEEP_MAX_ATTEMPTS", 3))
 
 # --- HTTP client -----------------------------------------------------------
 HTTP_MAX_RETRIES = int(_get("HTTP_MAX_RETRIES", 5))

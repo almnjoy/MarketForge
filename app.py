@@ -6,7 +6,7 @@ two file buses Claude Code drives:
 
   panels/*.html      -> every file renders as a live card on the WORKBENCH tab
                         (sandboxed iframe; edit/add/delete = the page transforms)
-  chat-inbox.jsonl   -> what Dustin says in the COPILOT tab (voice or typed)
+  chat-inbox.jsonl   -> what the operator says in the COPILOT tab (voice or typed)
   chat-outbox.jsonl  -> what Claude Code answers; the tab renders + speaks it
 
 Run:  run-portable.bat  ->  http://localhost:8410  (dashboard + engine, one window)
@@ -49,6 +49,37 @@ def _app_root() -> Path:
 
 ROOT = _app_root()
 
+# Market Forge version. Single source of truth: the release workflow and the
+# update check both read this, and Admin shows it.
+VERSION = "0.1.0"
+
+
+def _workspace() -> Path:
+    """Where the USER's things live: keys, trading plan, journal, panels, boards.
+
+    Source checkout -> the repo folder, exactly as before. Nothing moves.
+    Packaged build  -> ~/MarketForge, OUTSIDE the program folder.
+
+    The reason is updates. The program folder has to be disposable ("delete it,
+    unzip the new one") and everything personal has to survive that untouched.
+    It also keeps the file-bus honest: there is still one real, visible folder
+    you point a coding agent at, and now it is a friendly path instead of a
+    directory full of DLLs.
+
+    MF_WORKSPACE overrides both, which is how you test the packaged layout from
+    a source run.
+    """
+    env = os.environ.get("MF_WORKSPACE")
+    if env:
+        return Path(env).expanduser().resolve()
+    if FROZEN:
+        return Path.home() / "MarketForge"
+    return ROOT
+
+
+WORK = _workspace()
+BOT_HOME = WORK / "bot"          # the user's .env + data/, NOT the engine's code
+
 
 def resource_path(rel: str) -> Path:
     """Resolve a shipped read-only resource (static/, bundled docs).
@@ -64,14 +95,14 @@ def resource_path(rel: str) -> Path:
 
 
 STATIC = resource_path("static")
-PANELS = ROOT / "panels"
-INBOX = ROOT / "chat-inbox.jsonl"
-OUTBOX = ROOT / "chat-outbox.jsonl"
-RULES = ROOT / "RULES.md"
-SAVED = ROOT / "saved-workbenches"
-MEMORY = ROOT / "memory.md"        # standing preferences the copilot honors
-JOURNAL = ROOT / "journal.jsonl"   # the decision log Replay reconstructs from
-SHOTS = ROOT / "tv-shots"          # TradingView captures - agents READ these
+PANELS = WORK / "panels"
+INBOX = WORK / "chat-inbox.jsonl"
+OUTBOX = WORK / "chat-outbox.jsonl"
+RULES = WORK / "RULES.md"
+SAVED = WORK / "saved-workbenches"
+MEMORY = WORK / "memory.md"        # standing preferences the copilot honors
+JOURNAL = WORK / "journal.jsonl"   # the decision log Replay reconstructs from
+SHOTS = WORK / "tv-shots"          # TradingView captures - agents READ these
 
 DEFAULT_MEMORY = """# Trading Memory
 The copilot honors these on every turn. Edit here or tell it "remember ...".
@@ -97,7 +128,10 @@ def _journal_log(kind, text):
 _cfg = {"bot_base": "http://127.0.0.1:8796", "port": 8410,
         "voicebox_url": "http://127.0.0.1:17493"}
 try:
-    _cfg.update(json.loads((ROOT / "config.json").read_text(encoding="utf-8")))
+    _cfgp = WORK / "config.json"
+    if not _cfgp.exists():
+        _cfgp = ROOT / "config.json"      # shipped default on a fresh install
+    _cfg.update(json.loads(_cfgp.read_text(encoding="utf-8")))
 except Exception:
     pass
 # EMBEDDED mode (the "friend edition"): MF_EMBEDDED=1 (or config "embedded": true)
@@ -131,7 +165,7 @@ SHELL = {"shell": "browser", "can_focus": False}
 SHELL_HOOKS = {}   # shell.py may register: focus() -> bring the window forward
 
 
-BOT_PID = ROOT / "bot" / "data" / "engine.pid"
+BOT_PID = BOT_HOME / "data" / "engine.pid"
 
 
 def _pid_alive(pid):
@@ -147,6 +181,30 @@ def _pid_alive(pid):
         return False
 
 
+def _kill_engine_now() -> bool:
+    """Kill the running engine so the supervisor respawns it with a fresh .env.
+
+    This IS the apply mechanism for any bot/.env change: config.py reads the file
+    once at import, so nothing short of a new process picks up an edit. Callers
+    must check _shutdown_safety() first - a kill inside the order path's fill
+    window is the VRM failure class.
+    """
+    ENGINE_KICK.set()
+    try:
+        pid = int(BOT_PID.read_text().strip() or 0) if BOT_PID.exists() else 0
+    except Exception:
+        pid = 0
+    if not (pid and _pid_alive(pid)):
+        return False
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                       capture_output=True, timeout=10,
+                       stdin=subprocess.DEVNULL, **NOWIN)
+    else:
+        os.kill(pid, 9)
+    return True
+
+
 def _kill_stale_engine():
     """Kill an engine left over from a previous run.
 
@@ -154,7 +212,7 @@ def _kill_stale_engine():
     atexit does NOT reliably fire on Windows - the engine can survive with no
     window attached. Two of those running at once means two radar schedulers on
     one brokerage account, which is exactly the double-entry problem we retired
-    rocker to avoid. So: record the pid, and clean it up on the way IN as well
+    a second engine to avoid. So: record the pid, and clean it up on the way IN as well
     as on the way out.
     """
     try:
@@ -223,7 +281,7 @@ def _bot_supervisor():
     """
     import atexit
     _kill_stale_engine()
-    env_file = ROOT / "bot" / ".env"
+    env_file = BOT_HOME / ".env"
     eng_log = None
     backoff = 3
     while not ENGINE_STOP.is_set():
@@ -246,7 +304,7 @@ def _bot_supervisor():
                 eng_log and eng_log.close()
             except Exception:
                 pass
-            logs = ROOT / "logs"
+            logs = WORK / "logs"
             logs.mkdir(exist_ok=True)
             lp = logs / "engine.log"
             mode = "w" if (lp.exists() and lp.stat().st_size > 5_000_000) else "a"
@@ -256,8 +314,12 @@ def _bot_supervisor():
         proc = subprocess.Popen([sys.executable, str(ROOT / "bot" / "run_bot.py")],
                                 cwd=str(ROOT / "bot"),
                                 # one knob moves engine + proxy together; a real
-                                # env var beats bot/.env inside config.py
-                                env={**os.environ, "API_PORT": str(BOT_PORT)},
+                                # env var beats bot/.env inside config.py.
+                                # MF_BOT_HOME points the engine at the USER's
+                                # .env and ledger, which in a packaged build
+                                # live outside the disposable program folder.
+                                env={**os.environ, "API_PORT": str(BOT_PORT),
+                                     "MF_BOT_HOME": str(BOT_HOME)},
                                 **kw)
         try:
             BOT_PID.parent.mkdir(parents=True, exist_ok=True)
@@ -280,8 +342,9 @@ VOICEBOX = str(_cfg["voicebox_url"]).rstrip("/")
 _vb_profile = {"id": None}   # the app's default voice, resolved once from config
 _VB_ENGINE_OK = {}           # profile_id -> the engine field shape Voicebox accepted
 _STARTED_AT = time.time()    # process start, for the Admin tab's uptime
-USAGE = ROOT / "usage.jsonl"  # measured copilot spend, one line per bridge turn
-STATE = ROOT / "state.json"   # live snapshot ON DISK - see _state_writer()
+USAGE = WORK / "usage.jsonl"  # measured copilot spend, one line per bridge turn
+STATE = WORK / "state.json"   # live snapshot ON DISK - see _state_writer()
+STAGED = WORK / "staged-trade.json"   # a trade the copilot proposes; you confirm
 
 
 def _state_writer():
@@ -339,7 +402,13 @@ def _usage_log(ev: dict, model: str):
 # the fast flags skip the MCP/plugin boot that eats most of the latency.
 BRIDGE = bool(_cfg.get("bridge", True))
 BRIDGE_MODEL = str(_cfg.get("bridge_model", "sonnet"))
-BRIDGE_TIMEOUT = int(_cfg.get("bridge_timeout", 150))
+BRIDGE_TIMEOUT = int(_cfg.get("bridge_timeout", 150))   # legacy key, no longer enforced
+# Kill on SILENCE, not on elapsed time. A turn that is still emitting tool events
+# is working, not hung, and board-building legitimately runs for minutes. The old
+# fixed deadline killed healthy turns whose panels had already landed on disk,
+# which read as "it failed" and got the same work asked for twice.
+BRIDGE_IDLE_TIMEOUT = int(_cfg.get("bridge_idle_timeout", 90))   # quiet seconds = hung
+BRIDGE_MAX_S = int(_cfg.get("bridge_max_s", 900))                # absolute ceiling
 _bridge = {"status": "off", "turns": 0, "last_ms": 0, "error": ""}
 _bridge_current = {"proc": None}   # the in-flight claude process, so Stop can kill it
 
@@ -384,12 +453,12 @@ The user's standing MEMORY (memory.md - HONOR these, they override defaults; if 
   board, a brief, a review, a comparison, or research he wants to keep.
   Both is fine when it helps: move the chart, then build the notes beside it.
 - NEVER place a trade from this lane. The trade ticket and the interactive CC window are
-  Dustin's execution lanes, not yours.
+  The operator's execution lanes, not yours.
 
 Recent conversation:
 {history}
 
-Newest message(s) from Dustin:
+Newest message(s) from the operator:
 {new}"""
 
 
@@ -442,18 +511,39 @@ def _bridge_turn(new_texts):
     if bin_.lower().endswith((".cmd", ".bat")):
         argv = ["cmd", "/c"] + argv          # .cmd shims cannot be exec'd directly
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True, cwd=str(ROOT),
+                            stderr=subprocess.DEVNULL, text=True, cwd=str(WORK),
                             encoding="utf-8", errors="replace",
                             start_new_session=(os.name != "nt"),  # own group -> killpg gets the tree
                             **NOWIN)
     _bridge_current["proc"] = proc
-    killer = threading.Timer(BRIDGE_TIMEOUT, _kill_proc, args=(proc,))
-    killer.start()
+
+    # Watchdog: kill only after BRIDGE_IDLE_TIMEOUT seconds of TOTAL SILENCE, or
+    # at the absolute BRIDGE_MAX_S ceiling. Every stream event resets the clock,
+    # so a turn that is genuinely working is never killed for taking a while.
+    started = time.time()
+    last_event = [started]
+    killed = {"why": None}
+
+    def _watchdog():
+        while proc.poll() is None:
+            now = time.time()
+            if now - last_event[0] > BRIDGE_IDLE_TIMEOUT:
+                killed["why"] = f"went quiet for {BRIDGE_IDLE_TIMEOUT}s"
+                _kill_proc(proc)
+                return
+            if now - started > BRIDGE_MAX_S:
+                killed["why"] = f"hit the {BRIDGE_MAX_S}s ceiling"
+                _kill_proc(proc)
+                return
+            time.sleep(2)
+
+    threading.Thread(target=_watchdog, daemon=True).start()
     try:
         proc.stdin.write(prompt)
         proc.stdin.close()
         text_parts, result_text = [], None
         for line in _iter_lines(proc):
+            last_event[0] = time.time()      # proof of life; resets the watchdog
             line = line.strip()
             if not line:
                 continue
@@ -485,13 +575,21 @@ def _bridge_turn(new_texts):
                     pass
         proc.wait(timeout=15)
     finally:
-        killer.cancel()
         _bridge_current["proc"] = None
     if _bridge.pop("stopping", None):
         return "(stopped by you - say the word when you want me back on it)"
-    if proc.returncode and proc.returncode != 0 and not (result_text or text_parts):
-        return f"Bridge error (exit {proc.returncode}) - possibly timed out after {BRIDGE_TIMEOUT}s."
-    return (result_text or " ".join(text_parts) or "").strip() or "(no reply)"
+    partial = (result_text or " ".join(text_parts) or "").strip()
+    if killed["why"]:
+        # Say what landed. A killed turn has usually already written its panels
+        # and files, so reporting a bare error invites you to ask for the same
+        # work twice - which is exactly what used to happen.
+        note = (f"(I {killed['why']} and was stopped after "
+                f"{int(time.time() - started)}s. Anything I had already written to "
+                f"disk is saved - check the Workbench before asking again.)")
+        return f"{partial}\n\n{note}".strip() if partial else note
+    if proc.returncode and proc.returncode != 0 and not partial:
+        return f"Bridge error (exit {proc.returncode})."
+    return partial or "(no reply)"
 
 
 def _bridge_loop():
@@ -513,7 +611,8 @@ def _bridge_loop():
             try:
                 reply = _bridge_turn(new)
             except subprocess.TimeoutExpired:
-                reply = f"Bridge error: claude timed out after {BRIDGE_TIMEOUT}s."
+                reply = (f"Bridge error: the agent went quiet for "
+                         f"{BRIDGE_IDLE_TIMEOUT}s and was stopped.")
             except Exception as e:
                 reply = f"Bridge error: {str(e)[:150]}"
             _bridge["last_ms"] = int((time.time() - t0) * 1000)
@@ -536,7 +635,183 @@ _chat_lock = threading.Lock()
 BOT_GET = {"status", "positions", "orders", "equity", "radar", "reddit",
            "config", "log", "spark", "bars", "news", "unprotected",
            "broker/orders",   # live broker orders; /orders is the local ledger
-           "regime"}          # market regime gate (read-only, additive)
+           "regime",          # market regime gate (read-only, additive)
+           "shutdown-check"}  # is anything working that must not be abandoned
+
+
+_update_cache = {"ts": 0.0, "latest": None, "url": None}
+
+
+def _newer(a: str, b: str) -> bool:
+    """Is version a newer than b? Tolerates junk by comparing what parses."""
+    def parts(v):
+        out = []
+        for chunk in str(v or "").strip().lstrip("vV").split("."):
+            digits = "".join(c for c in chunk if c.isdigit())
+            out.append(int(digits) if digits else 0)
+        return out
+    pa, pb = parts(a), parts(b)
+    pa += [0] * (len(pb) - len(pa))
+    pb += [0] * (len(pa) - len(pb))
+    return pa > pb
+
+
+def _check_update():
+    """Ask GitHub once a day whether a newer release exists. Notify only.
+
+    Deliberately NOT an auto-updater. Windows cannot overwrite a running exe, so
+    self-update needs a helper process and a restart dance, and getting that
+    wrong on an app that holds broker keys is a bad trade. Set
+    "update_check": false in config.json to disable the call entirely.
+    """
+    if not _cfg.get("update_check", True):
+        return None
+    if time.time() - _update_cache["ts"] < 86400:
+        return _update_cache
+    _update_cache["ts"] = time.time()
+    try:
+        req = urllib.request.Request(
+            "https://api.github.com/repos/almnjoy/MarketForge/releases/latest",
+            headers={"Accept": "application/vnd.github+json",
+                     "User-Agent": f"MarketForge/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            d = json.loads(r.read())
+        _update_cache["latest"] = str(d.get("tag_name") or "").lstrip("vV")
+        _update_cache["url"] = d.get("html_url")
+    except Exception:
+        pass                      # offline, rate-limited, or no release yet
+    return _update_cache
+
+
+# Files the user may edit from inside the app. An ALLOWLIST, not a filter: a
+# path-traversal check on a free-form name is a bug waiting to happen, and this
+# server has broker keys in the same process. bot/.env is deliberately absent -
+# keys go through the setup wizard, which validates them against Alpaca first.
+EDITABLE = {
+    "RULES.md":    ("Your trading plan. The copilot treats it as binding.", "md"),
+    "memory.md":   ("Standing orders injected into every copilot turn.", "md"),
+    "CLAUDE.md":   ("The copilot's brief and hard rules. Editing changes behaviour.", "md"),
+    "PROMPTS.md":  ("Prompts that reliably work. Notes to yourself.", "md"),
+    "config.json": ("Ports, model, theme, voice. Must stay valid JSON.", "json"),
+}
+
+
+def _editable_path(name: str):
+    if name not in EDITABLE:
+        return None
+    return WORK / name
+
+
+def _write_atomic(path: Path, text: str):
+    """Write via a temp file + replace, keeping one .bak.
+
+    A half-written RULES.md is a copilot reading a truncated trading plan, and a
+    half-written config.json will not boot. Neither is worth saving two lines.
+    """
+    if path.exists():
+        try:
+            path.with_suffix(path.suffix + ".bak").write_bytes(path.read_bytes())
+        except Exception:
+            pass
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8", newline="\n")
+    tmp.replace(path)
+
+
+# Scanner settings the UI may write into bot/.env. Allowlisted and typed, so a
+# form post can never inject an arbitrary env var into the engine's process.
+#   name: (kind, min, max)   kind: int | float | csv_hours | csv_words | bool
+SCAN_KEYS = {
+    "RADAR_SCAN_HOURS":        ("csv_hours", 0, 23),
+    "RADAR_MIN_MOVE_PCT":      ("float", 0.5, 100),
+    "RADAR_TOP_N":             ("int", 1, 200),
+    "RADAR_MIN_PRICE_CENTS":   ("int", 0, 1_000_000),
+    "RADAR_LLM_MIN_SCORE":     ("int", 0, 100),
+    "RADAR_REDDIT_ENABLED":    ("bool", 0, 1),
+    "RADAR_REDDIT_SUBS":       ("csv_words", 0, 0),
+    "RADAR_REDDIT_CACHE_SECS": ("int", 60, 86_400),
+}
+
+
+def _coerce_scan(key, val):
+    """Validate one setting. Returns (ok, cleaned_string_or_error)."""
+    kind, lo, hi = SCAN_KEYS[key]
+    s = str(val).strip()
+    try:
+        if kind == "int":
+            n = int(float(s))
+            if not (lo <= n <= hi):
+                return False, f"{key} must be between {lo} and {hi}"
+            return True, str(n)
+        if kind == "float":
+            f = float(s)
+            if not (lo <= f <= hi):
+                return False, f"{key} must be between {lo} and {hi}"
+            return True, str(f)
+        if kind == "bool":
+            return True, "true" if s.lower() in ("1", "true", "yes", "on") else "false"
+        if kind == "csv_hours":
+            hrs = sorted({int(x) for x in s.replace(" ", "").split(",") if x.isdigit()})
+            if not hrs:
+                return False, "pick at least one scan hour, or the radar never runs"
+            if any(h < lo or h > hi for h in hrs):
+                return False, "scan hours must be 0-23"
+            return True, ",".join(str(h) for h in hrs)
+        if kind == "csv_words":
+            words = [w.strip().lstrip("r/") for w in s.split(",")]
+            words = [w for w in words if w and w.replace("_", "").isalnum()]
+            if not words:
+                return False, "give at least one subreddit"
+            return True, ",".join(words)
+    except (TypeError, ValueError):
+        return False, f"{key}: '{s}' is not a valid value"
+    return False, f"{key}: unsupported"
+
+
+def _env_update(updates: dict):
+    """Rewrite matching KEY= lines in bot/.env, appending any that are missing.
+
+    Line-oriented on purpose: the file carries the template's comments and
+    ordering, and those comments are the only documentation most people will
+    read. Atomic, with a .bak, because a truncated .env is an engine that will
+    not boot.
+    """
+    path = BOT_HOME / ".env"
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    remaining = dict(updates)
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            k = stripped.split("=", 1)[0].strip()
+            if k in remaining:
+                out.append(f"{k}={remaining.pop(k)}")
+                continue
+        out.append(line)
+    for k, v in remaining.items():
+        out.append(f"{k}={v}")
+    _write_atomic(path, "\n".join(out) + "\n")
+
+
+def _qs_truthy(qs: str, key: str) -> bool:
+    vals = urllib.parse.parse_qs(qs or "").get(key) or []
+    return bool(vals) and str(vals[0]).lower() not in ("0", "false", "no", "")
+
+
+def _shutdown_safety(timeout=8):
+    """(safe, reasons) - is anything working that must not be abandoned?
+
+    Fails OPEN when the ENGINE is unreachable: if the engine is already down it
+    is not protecting anything, so blocking the quit is friction with no safety
+    benefit. The engine's own handler fails CLOSED when the BROKER is unreachable,
+    which is the case that actually matters.
+    """
+    try:
+        raw, _code = _bot_get("shutdown-check", timeout=timeout)
+        data = json.loads(raw)
+        return bool(data.get("safe")), list(data.get("reasons") or [])
+    except Exception:
+        return True, []
 
 
 def _bot_get(path_qs: str, timeout=25):
@@ -863,13 +1138,54 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "bad name"}, 400)
             return self._file(f, "image/png")
 
+        if path == "/api/staged":
+            # A trade the copilot has PROPOSED. It writes the file; this only
+            # reads it. Same file-bus contract as panels/ - the agent's output
+            # is a file on disk, not a privileged API call, which is exactly
+            # why it can never place an order by writing one.
+            try:
+                t = json.loads(STAGED.read_text(encoding="utf-8")) if STAGED.exists() else None
+            except Exception:
+                t = None
+            if not isinstance(t, dict) or not t.get("symbol"):
+                return self._json({"staged": None})
+            ttl = int(t.get("ttl_s") or 1800)
+            age = time.time() - float(t.get("ts") or 0)
+            # Expire rather than hide: a ticket reasoned about at 09:40 is not a
+            # one-click buy at 15:30 against a different price.
+            t["age_s"] = int(age)
+            t["expired"] = age > ttl
+            return self._json({"staged": t})
+
+        if path == "/api/file":
+            name = urllib.parse.parse_qs(qs).get("name", [""])[0]
+            p = _editable_path(name)
+            if not p:
+                return self._json({"error": "not an editable file"}, 404)
+            try:
+                text = p.read_text(encoding="utf-8") if p.exists() else ""
+            except Exception as e:
+                return self._json({"error": str(e)[:200]}, 500)
+            what, kind = EDITABLE[name]
+            return self._json({"name": name, "text": text, "what": what, "kind": kind,
+                               "exists": p.exists(), "path": str(p)})
+
         if path == "/api/meta":
+            upd = _check_update() or {}
+            newer = bool(upd.get("latest") and _newer(upd["latest"], VERSION))
             return self._json({"bot_base": BOT, "port": PORT, "root": str(ROOT),
-                               "voicebox": VOICEBOX, "user": str(_cfg.get("user", "Dustin")),
+                               "workspace": str(WORK), "version": VERSION,
+                               "update": {"available": newer,
+                                          "latest": upd.get("latest"),
+                                          "url": upd.get("url")},
+                               "voicebox": VOICEBOX, "user": str(_cfg.get("user", "")),
                                "theme": str(_cfg.get("theme", "forge")),
                                "app": "marketforge",   # single-instance probe checks this
                                "shell": SHELL["shell"],
-                               "splash_ms": int(_cfg.get("splash_ms", 2500))})
+                               "splash_ms": int(_cfg.get("splash_ms", 2500)),
+                               # how long you must stop talking before hot mic
+                               # decides the utterance is over
+                               "voice_endpoint_ms": int(_cfg.get("voice_endpoint_ms", 1800))})
 
         if path == "/api/shell":
             # Feature-detect, never shell-detect: the UI hides what is missing.
@@ -928,6 +1244,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             ra = (bot_cfg.get("radar_auto") or {}) if isinstance(bot_cfg, dict) else {}
+            _sc = (bot_cfg.get("radar_scoring") or {}) if isinstance(bot_cfg, dict) else {}
 
             jrn = _read_jsonl(JOURNAL, 4000)
             kinds = {}
@@ -938,7 +1255,8 @@ class Handler(BaseHTTPRequestHandler):
                 "name": "Bridge (in-app copilot)", "runtime": "claude -p, headless",
                 "model": BRIDGE_MODEL, "enabled": BRIDGE,
                 "status": _bridge.get("status"), "turns": _bridge.get("turns", 0),
-                "last_ms": _bridge.get("last_ms", 0), "timeout_s": BRIDGE_TIMEOUT,
+                "last_ms": _bridge.get("last_ms", 0), "timeout_s": BRIDGE_IDLE_TIMEOUT,
+                "idle_timeout_s": BRIDGE_IDLE_TIMEOUT, "max_s": BRIDGE_MAX_S,
                 "binary": _resolve_claude() or "not found on PATH",
                 "note": "One short turn per chat message. Builds panels, answers, speaks.",
             }, {
@@ -947,12 +1265,17 @@ class Handler(BaseHTTPRequestHandler):
                 "status": "external", "turns": None, "last_ms": None, "timeout_s": None,
                 "binary": "", "note": "The deep-work lane. Market Forge cannot see or set its model.",
             }, {
-                "name": "Catalyst scoring", "runtime": "OpenAI-compatible endpoint",
-                "model": (bot_cfg.get("radar_llm_model") or "rules-only (no LLM)"),
-                "enabled": bool(bot_cfg.get("radar_use_llm")),
-                "status": "on" if bot_cfg.get("radar_use_llm") else "off",
+                # Read the engine's resolved answer, do not re-derive it here.
+                # The old code guessed from keys the engine never sent, so this
+                # lane reported "rules-only / off" regardless of the truth.
+                "name": "Catalyst scoring",
+                "runtime": str(_sc.get("runtime") or "unknown"),
+                "model": str(_sc.get("model") or "rules-only (no LLM)"),
+                "enabled": bool(_sc.get("enabled")),
+                "status": {"agent": "ready", "endpoint": "ready", "off": "off"}.get(
+                    str(_sc.get("effective")), "unavailable"),
                 "turns": None, "last_ms": None, "timeout_s": None,
-                "binary": str(bot_cfg.get("radar_llm_base") or ""),
+                "binary": str(_sc.get("where") or ""),
                 "note": "Scores each mover 0-100 signal-vs-noise. Auto-entries need a score.",
             }, {
                 "name": "Voice", "runtime": "Voicebox (local)",
@@ -964,12 +1287,12 @@ class Handler(BaseHTTPRequestHandler):
             }]
 
             files = [
-                finfo(ROOT / "CLAUDE.md", "CLAUDE.md", "The copilot's brief and hard rules"),
+                finfo(WORK / "CLAUDE.md", "CLAUDE.md", "The copilot's brief and hard rules"),
                 finfo(RULES, "RULES.md", "Your written trading plan"),
                 finfo(MEMORY, "memory.md", "Standing orders injected into every turn"),
-                finfo(ROOT / "PROMPTS.md", "PROMPTS.md", "Prompts that reliably work"),
-                finfo(ROOT / "config.json", "config.json", "Ports, model, theme, Voicebox"),
-                finfo(ROOT / "bot" / ".env", "bot/.env", "Your keys. Never displayed, never committed."),
+                finfo(WORK / "PROMPTS.md", "PROMPTS.md", "Prompts that reliably work"),
+                finfo(WORK / "config.json", "config.json", "Ports, model, theme, Voicebox"),
+                finfo(BOT_HOME / ".env", "bot/.env", "Your keys. Never displayed, never committed."),
                 finfo(JOURNAL, "journal.jsonl", "Every scan, chat, order and board"),
                 finfo(INBOX, "chat-inbox.jsonl", "What you said"),
                 finfo(OUTBOX, "chat-outbox.jsonl", "What the copilot said"),
@@ -977,9 +1300,14 @@ class Handler(BaseHTTPRequestHandler):
 
             return self._json({
                 "runtime": {
+                    "version": VERSION,
+                    "update": (lambda u: {"available": bool(u.get("latest") and
+                                                            _newer(u["latest"], VERSION)),
+                                          "latest": u.get("latest"), "url": u.get("url")}
+                               )(_check_update() or {}),
                     "python": sys.version.split()[0], "platform": sys.platform,
                     "embedded": EMBEDDED, "port": PORT, "root": str(ROOT),
-                    "bot_base": BOT,
+                    "workspace": str(WORK), "bot_base": BOT,
                     "started": time.strftime("%Y-%m-%d %H:%M", time.localtime(_STARTED_AT)),
                     "uptime_s": int(time.time() - _STARTED_AT),
                 },
@@ -987,8 +1315,8 @@ class Handler(BaseHTTPRequestHandler):
                 "files": files,
                 "counts": {
                     "panels": len(_panels_state()),
-                    "boards": len([d for d in (ROOT / "saved-workbenches").glob("*") if d.is_dir()])
-                              if (ROOT / "saved-workbenches").exists() else 0,
+                    "boards": len([d for d in SAVED.glob("*") if d.is_dir()])
+                              if SAVED.exists() else 0,
                     "journal": len(jrn), "journal_kinds": kinds,
                     "chat": len(_read_jsonl(INBOX, 4000)) + len(_read_jsonl(OUTBOX, 4000)),
                 },
@@ -1162,10 +1490,93 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"ok": False, "error": str(e)[:120]}, 500)
 
+        if parsed.path == "/api/scan-settings":
+            # Applying these restarts the engine. That is the same hazard as
+            # quitting: a restart mid-fill drops the in-process watcher that arms
+            # the stop. So it refuses on exactly the same condition.
+            safe, reasons = _shutdown_safety()
+            if not safe and not bool(body.get("force")):
+                return self._json({"ok": False, "blocked": True, "reasons": reasons,
+                                   "hint": "an entry is working - applying this "
+                                           "restarts the engine"}, 409)
+            updates, errors = {}, []
+            for k, v in (body.get("settings") or {}).items():
+                if k not in SCAN_KEYS:
+                    errors.append(f"{k} is not a scan setting")
+                    continue
+                ok, res = _coerce_scan(k, v)
+                (errors.append(res) if not ok else updates.update({k: res}))
+            if errors:
+                return self._json({"ok": False, "errors": errors}, 400)
+            if not updates:
+                return self._json({"ok": False, "errors": ["nothing to change"]}, 400)
+            try:
+                _env_update(updates)
+            except Exception as e:
+                return self._json({"ok": False, "errors": [str(e)[:200]]}, 500)
+            # The supervisor respawns it; killing is how you apply a .env change,
+            # since config.py reads the file once at import.
+            restarted = False
+            if EMBEDDED:
+                try:
+                    _kill_engine_now()
+                    restarted = True
+                except Exception:
+                    pass
+            return self._json({"ok": True, "applied": updates, "restarted": restarted,
+                               "note": "saved" + (" - engine restarting" if restarted
+                                                  else " - restart the desk to apply")})
+
+        if parsed.path == "/api/staged/clear":
+            try:
+                STAGED.unlink(missing_ok=True)
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:150]}, 500)
+            return self._json({"ok": True})
+
+        if parsed.path == "/api/file":
+            name = str(body.get("name", ""))
+            p = _editable_path(name)
+            if not p:
+                return self._json({"ok": False, "error": "not an editable file"}, 404)
+            text = body.get("text")
+            if not isinstance(text, str):
+                return self._json({"ok": False, "error": "text must be a string"}, 400)
+            if EDITABLE[name][1] == "json":
+                # Validate BEFORE writing. A broken config.json does not fail at
+                # save time, it fails at the next launch, when the editor that
+                # broke it is no longer running.
+                try:
+                    json.loads(text)
+                except Exception as e:
+                    return self._json({"ok": False, "error": f"invalid JSON: {str(e)[:160]}"}, 400)
+            try:
+                _write_atomic(p, text)
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:200]}, 500)
+            note = ""
+            if name == "config.json":
+                note = "saved - config.json is read at startup, so restart the desk to apply it"
+            elif name in ("CLAUDE.md", "RULES.md", "memory.md", "PROMPTS.md"):
+                note = "saved - the copilot picks this up on its next turn"
+            return self._json({"ok": True, "bytes": len(text.encode("utf-8")), "note": note})
+
         if parsed.path == "/api/shell/quit":
             # Close the shell window cleanly (the tray-less "Quit"). Runs the
             # same path as clicking X: webview loop ends, server stops, the
             # engine tree is killed. No-op in a plain browser.
+            #
+            # REFUSES while an entry is working. The exit guarantee only holds
+            # while this process is alive: the queue re-arms on boot, but a fill
+            # that lands while we are dead sits at the broker with no stop until
+            # someone reopens the app. Quitting then is the one action that still
+            # reproduces the original naked-position bug, so it takes an explicit
+            # override rather than a warning nobody reads.
+            if not _qs_truthy(parsed.query, "force"):
+                safe, reasons = _shutdown_safety()
+                if not safe:
+                    return self._json({"ok": False, "blocked": True, "reasons": reasons,
+                                       "hint": "retry with ?force=1 to quit anyway"}, 409)
             hook = SHELL_HOOKS.get("quit")
             if not hook:
                 return self._json({"ok": False, "hint": "no shell to quit"})
@@ -1250,17 +1661,8 @@ class Handler(BaseHTTPRequestHandler):
             # it within seconds.
             restarted = False
             if EMBEDDED:
-                ENGINE_KICK.set()
                 try:
-                    pid = int(BOT_PID.read_text().strip() or 0) if BOT_PID.exists() else 0
-                    if pid and _pid_alive(pid):
-                        if os.name == "nt":
-                            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
-                                           capture_output=True, timeout=10,
-                                           stdin=subprocess.DEVNULL, **NOWIN)
-                        else:
-                            os.kill(pid, 9)
-                        restarted = True
+                    restarted = _kill_engine_now()
                 except Exception:
                     pass
             return self._json({"ok": True, "feed": feed, "mode": mode,
@@ -1534,11 +1936,39 @@ def build_server():
     """Everything main() did short of serve_forever(): dirs, the bind, the
     worker threads. Split out so shell.py can run the server on a thread and
     keep the GUI loop for itself. Raises SystemExit(2) on a busy port."""
+    # The workspace. In a source run this is the repo and every mkdir is a no-op.
+    # In a packaged run it is ~/MarketForge and this is where it gets built.
+    WORK.mkdir(parents=True, exist_ok=True)
+    BOT_HOME.mkdir(parents=True, exist_ok=True)
+    (BOT_HOME / "data").mkdir(parents=True, exist_ok=True)
     PANELS.mkdir(exist_ok=True)
     SHOTS.mkdir(exist_ok=True)
     SAVED.mkdir(exist_ok=True)
+    if WORK != ROOT:
+        # Seed the workspace from the shipped copies, ONCE. Never overwrite: the
+        # whole point is that an update cannot touch what the user has edited.
+        # CLAUDE.md has to be here rather than in the program folder, because the
+        # copilot runs with the workspace as its cwd and auto-loads it from there.
+        for name in ("CLAUDE.md", "PROMPTS.md", "config.json"):
+            src, dst = resource_path(name), WORK / name
+            if src.exists() and not dst.exists():
+                dst.write_bytes(src.read_bytes())
+        wel = resource_path("panels") / "00-welcome.html"
+        if wel.exists() and not (PANELS / "00-welcome.html").exists():
+            (PANELS / "00-welcome.html").write_bytes(wel.read_bytes())
+        tpl = resource_path("bot") / ".env.template"
+        if tpl.exists() and not (BOT_HOME / ".env.template").exists():
+            (BOT_HOME / ".env.template").write_bytes(tpl.read_bytes())
     if not MEMORY.exists():
         MEMORY.write_text(DEFAULT_MEMORY, encoding="utf-8")
+    # RULES.md is YOUR trading plan, so it is user data and never ships. Seed it
+    # from the shipped template on first run, then leave it alone forever - an
+    # update must never overwrite what someone wrote about how they trade.
+    if not RULES.exists():
+        tpl = resource_path("RULES.template.md")
+        if tpl.exists():
+            RULES.write_text(tpl.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"  rules:   seeded {RULES.name} from the template - edit it, it is yours")
     for p in (INBOX, OUTBOX):
         if not p.exists():
             p.write_text("", encoding="utf-8")
@@ -1553,13 +1983,16 @@ def build_server():
         print(f"  !!     set MF_PORT=8412  &&  python app.py\n")
         raise SystemExit(2)
     lane = "remote engine" if not EMBEDDED else "embedded engine"
-    print(f"MARKET FORGE [{lane}]  ->  http://localhost:{PORT}")
+    print(f"MARKET FORGE {VERSION} [{lane}]  ->  http://localhost:{PORT}")
     if EMBEDDED:
         threading.Thread(target=_bot_supervisor, daemon=True).start()
         print(f"  bot API: {BOT}  (EMBEDDED - engine runs in this process tree)")
     else:
         print(f"  bot API: {BOT}")
-    print(f"  panels:  {PANELS}  (Claude Code writes here; the WORKBENCH renders it live)")
+    if WORK != ROOT:
+        print(f"  workspace: {WORK}  (your keys, plan, journal and boards live HERE,")
+        print( "             not in the program folder - point your coding agent at it)")
+    print(f"  panels:  {PANELS}  (your coding agent writes here; the WORKBENCH renders it live)")
     print("  chat:    chat-inbox.jsonl / chat-outbox.jsonl")
     threading.Thread(target=_state_writer, daemon=True).start()
     print(f"  state:   {STATE.name}  (live snapshot on disk, every 20s - lanes "

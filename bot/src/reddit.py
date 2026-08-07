@@ -1,6 +1,6 @@
 """Retail buzz radar: what tickers Reddit's hot pages are pushing right now.
 
-Dustin's read (2026-08-05): Reddit is still KING for catching crazy news and
+The rationale: reddit is still a fast read on retail attention, catching news and
 retail holds early, so fold it into the radar. Pulls hot posts from the
 configured subs over www.reddit.com's public Atom RSS (the ONLY reddit surface that serves real
 data from this network as of 2026-08: old.reddit and every .json endpoint

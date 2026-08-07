@@ -6,7 +6,7 @@ What it does, in order:
   1. icon: demo/logo-on-dark.png -> build/MarketForge.ico (Pillow)
   2. PyInstaller one-folder build from MarketForge.spec (exe + _internal/)
   3. copies the SIBLING FILES the app runs from: static/, bot/ (code +
-     .env.template ONLY), panels/00-welcome.html, RULES.md, CLAUDE.md, and a
+     .env.template ONLY), panels/00-welcome.html, RULES.template.md, CLAUDE.md, and a
      clean default config.json
   4. refuses to ship secrets or personal state (bot/.env, bot/data, chat logs,
      memory.md) and verifies that before zipping
@@ -28,10 +28,14 @@ ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist" / "MarketForge"
 NEVER_SHIP = ["bot/.env", "bot/data", "chat-inbox.jsonl", "chat-outbox.jsonl",
               "memory.md", "journal.jsonl", "usage.jsonl", "state.json",
-              "webview-data", "logs", "tv-shots", "saved-workbenches"]
+              "webview-data", "logs", "tv-shots", "saved-workbenches",
+              # RULES.md is the developer's own trading plan. The build ships
+              # RULES.template.md and the app seeds RULES.md from it on first
+              # run, so a release must never carry one person's strategy.
+              "RULES.md"]
 
 # A fresh default config - NOT the repo one, which carries personal picks
-# (Dustin's cloned voice, opus bridge). sonnet is the friend default.
+# (a cloned voice, an opus bridge). sonnet is the shipped default.
 DEFAULT_CONFIG = """{
   "port": 8410,
   "voicebox_url": "http://127.0.0.1:17493",
@@ -87,7 +91,7 @@ def copy_siblings():
     # run-tradingview.bat: tv.py is bundled in the exe (app.py imports it), so
     # /api/tv/* are live endpoints whose error hint says to run this file -
     # ship it or the hint points at nothing. No secrets in it.
-    for f in ("RULES.md", "CLAUDE.md", "run-tradingview.bat"):
+    for f in ("RULES.template.md", "CLAUDE.md", "run-tradingview.bat"):
         shutil.copy2(ROOT / f, DIST / f)
         print(f"  + {f}")
     (DIST / "config.json").write_text(DEFAULT_CONFIG, encoding="utf-8")
@@ -100,7 +104,7 @@ def verify():
         raise SystemExit(f"REFUSING TO SHIP - secrets/personal state in dist: {bad}")
     for must in ("MarketForge.exe", "static/index.html", "static/setup.html",
                  "bot/run_bot.py", "bot/src/api.py", "bot/.env.template",
-                 "panels/00-welcome.html", "RULES.md", "CLAUDE.md",
+                 "panels/00-welcome.html", "RULES.template.md", "CLAUDE.md",
                  "run-tradingview.bat"):
         if not (DIST / must).exists():
             raise SystemExit(f"dist is missing {must}")
