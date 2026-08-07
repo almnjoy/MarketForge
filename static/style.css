@@ -413,6 +413,12 @@ body.has-reader { overflow: hidden; }
 /* generic: any element can opt out. Only .naked and .btn.stop had one, so
    a `hidden` class on anything else did nothing at all. */
 .hidden { display: none !important; }
+/* Quit sits apart from the toggle row and reads as terminal, not neutral - it
+   shuts down a desk that can hold real positions. */
+.btn.quit { border-color: color-mix(in srgb, var(--loss) 45%, var(--border));
+  color: var(--loss); margin-left: 6px; }
+.btn.quit:hover { background: color-mix(in srgb, var(--loss) 16%, transparent);
+  border-color: var(--loss); }
 .turn.typing .stopmini { margin-left: 10px; cursor: pointer; color: var(--loss); font-style: normal; }
 .turn.typing .stopmini:hover { color: var(--loss2); }
 .chip.mkt { font-family: var(--serif); font-weight: 600; }

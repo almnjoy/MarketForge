@@ -24,11 +24,12 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
   <span id="feedChip" class="chip" title="market data feed"></span>
   <button id="hotMic" class="btn sm" title="Hot mic: always listening, from any tab (echo-guarded while the copilot speaks)">🎙 hot mic</button>
   <button id="memBtn" class="btn sm" title="Trading memory - standing rules the copilot honors on every turn">🧠 memory</button>
-  <button id="quitBtn" class="btn sm hidden" title="Stop the desk and the engine. Closing the browser tab does NOT stop it.">⏻ quit</button>
   <div class="spacer"></div>
   <span id="mktClock" class="chip mkt"></span>
   <span id="equityTicker" class="mono">$ --</span>
   <span id="clock" class="mono dim"></span>
+  <button id="quitBtn" class="btn sm quit hidden"
+    title="Stop Market Forge and the trading engine. Closing the tab also stops it.">⏻ quit</button>
 </header>
 
 <div id="tape"><div class="tape-track" id="tapeTrack"><span class="tick dim">loading tape...</span></div></div>

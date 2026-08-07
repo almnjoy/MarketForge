@@ -137,16 +137,53 @@ def _browser_fallback(srv, err):
     print(f"  Reason: {err.__class__.__name__}: {str(err)[:160]}")
     print("  (usually pywebview/.NET. Running from a network or removable")
     print("   drive is a common cause - try a local folder like C:\\MarketForge)")
-    print("  TO STOP IT: use Quit in the app (top right). Closing the browser tab")
-    print("  does NOT stop the desk - there is no window to close.")
+    print("  Close the browser tab and the app shuts itself down within a minute.")
+    print("  Or use the Quit button in the app. Either way the engine stops too -")
+    print("  except while an entry is working, which it will not abandon.")
     print("  " + "=" * 66 + "\n")
     try:
         webbrowser.open(url)
     except Exception:
         pass
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    # CLOSE THE TAB, CLOSE THE APP.
+    #
+    # A windowless exe whose only UI is a browser tab has to treat "no tab open"
+    # as "quit", because that is what everyone will expect and nobody will
+    # remember to press a button first. beforeunload is not usable for this - it
+    # does not reliably fire, and a plain refresh fires it too.
+    #
+    # So: the page polls constantly, and a long silence means every tab is gone.
+    # The grace window is generous on purpose - a hard refresh, a sleeping
+    # laptop or a slow reload must not read as "closed".
+    grace = float(desk._cfg.get("browser_exit_grace_s", 60))
+
+    def _watch_tabs():
+        while not stop.is_set():
+            time.sleep(5)
+            if time.time() - desk.LAST_CLIENT[0] < grace:
+                continue
+            # NEVER exit out from under a working entry. Same guard as stop.bat:
+            # the fill would land with no stop behind it and nothing running to
+            # arm one. Better a stray background process than a naked position.
+            try:
+                safe, reasons = desk._shutdown_safety()
+            except Exception:
+                safe, reasons = True, []
+            if not safe:
+                print(f"[shell] no browser for {int(grace)}s but NOT exiting: "
+                      f"{'; '.join(reasons)}")
+                desk.LAST_CLIENT[0] = time.time()   # re-check after another window
+                continue
+            print(f"[shell] no browser open for {int(grace)}s - shutting down")
+            stop.set()
+            return
+
+    if grace > 0:
+        threading.Thread(target=_watch_tabs, daemon=True).start()
     try:
-        stop.wait()                  # blocks until /api/shell/quit fires
+        stop.wait()                  # /api/shell/quit, or the tab watcher
     except KeyboardInterrupt:
         pass
     print("[shell] quit requested - shutting down")

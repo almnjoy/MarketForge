@@ -342,6 +342,10 @@ VOICEBOX = str(_cfg["voicebox_url"]).rstrip("/")
 _vb_profile = {"id": None}   # the app's default voice, resolved once from config
 _VB_ENGINE_OK = {}           # profile_id -> the engine field shape Voicebox accepted
 _STARTED_AT = time.time()    # process start, for the Admin tab's uptime
+# When a BROWSER last hit us. The page polls constantly (chat 2.5s, overview
+# 15s), so a long silence means every tab is gone. The engine never calls in
+# here - app.py proxies OUT to it - so this really is a client signal.
+LAST_CLIENT = [time.time()]
 USAGE = WORK / "usage.jsonl"  # measured copilot spend, one line per bridge turn
 STATE = WORK / "state.json"   # live snapshot ON DISK - see _state_writer()
 STAGED = WORK / "staged-trade.json"   # a trade the copilot proposes; you confirm
@@ -1093,6 +1097,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path, qs = parsed.path, parsed.query
+        LAST_CLIENT[0] = time.time()
 
         if path in ("/", "/index.html"):
             # First run (no usable keys in bot/.env): the desk would just be
@@ -1516,6 +1521,7 @@ class Handler(BaseHTTPRequestHandler):
                                "error": f"transcribe failed: {str(e)[:140]}"}, 502)
 
     def do_POST(self):
+        LAST_CLIENT[0] = time.time()
         parsed = urllib.parse.urlparse(self.path)
         length = int(self.headers.get("Content-Length") or 0)
         if length > 25_000_000:

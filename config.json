@@ -3,7 +3,7 @@
   "bot_base": "http://127.0.0.1:8796",
   "port": 8410,
   "voicebox_url": "http://127.0.0.1:17493",
-  "voicebox_profile": "Adam",
+  "voicebox_profile": "George",
   "bridge_model": "opus",
   "bridge_timeout": 240
 }
