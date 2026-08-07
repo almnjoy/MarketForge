@@ -22,14 +22,14 @@ body {
                     linear-gradient(90deg, var(--grid) 1px, transparent 1px);
   background-size: var(--grid-size) var(--grid-size);
 }
-.wrap { width: min(860px, 94vw); padding: 34px 0 60px; }
-.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
-.brand img { height: 40px; filter: drop-shadow(0 0 24px rgba(255,106,0,.35)); }
-.brand .t { font-family: var(--display); font-size: 21px; letter-spacing: .04em; }
-.brand .t span { color: var(--accent); }
+.wrap { width: min(860px, 94vw); padding: 26px 0 60px; }
+/* the mark IS the wordmark - no text next to it, let it breathe */
+.brand { display: flex; justify-content: center; margin-bottom: 10px; }
+.brand img { height: 110px; filter: drop-shadow(0 0 34px rgba(255,106,0,.4)); }
 .kick {
   color: var(--accent); font-style: var(--kicker-style); text-transform: var(--kicker-tt);
   letter-spacing: var(--kicker-ls); font-size: 12px; margin-bottom: 26px;
+  text-align: center;
 }
 .dots { display: flex; gap: 7px; margin: 0 0 22px; }
 .dots i { width: 26px; height: 4px; border-radius: 2px; background: var(--border); transition: background .25s; }
@@ -103,8 +103,7 @@ input:focus { border-color: var(--primary); }
 <body>
 <div class="wrap">
   <div class="brand">
-    <img src="/static/logo.svg" alt="" onerror="this.style.display='none'">
-    <span class="t">MARKET<span>FORGE</span></span>
+    <img src="/static/logo.svg" alt="Market Forge" onerror="this.style.display='none'">
   </div>
   <div class="kick">first-run setup · everything stays on this machine</div>
   <div class="dots" id="dots"></div>

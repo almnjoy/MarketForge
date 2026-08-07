@@ -7,9 +7,10 @@ and the AI copilot seat. No Docker, no servers, your keys never leave the machin
 If you got the **desktop build** (`MarketForge-win64.zip`), there is no step 1:
 unzip somewhere SHORT (`C:\MarketForge` beats ten nested folders - Windows
 path-length limits are real), double-click `MarketForge.exe`, and the setup
-wizard walks you through your Alpaca keys in a native window. Everything below
-still applies - same folder, same files, same knobs. Build it yourself with
-`python build.py` (see `docs/PACKAGING.md`).
+wizard walks you through your Alpaca keys in a native window - once. Everything
+below still applies - same folder, same files, same knobs. Build it yourself
+with `python build.py` (see `docs/PACKAGING.md`) - and then run a COPY, not
+`dist/` itself, because builds wipe that folder along with any keys in it.
 
 ## Setup from source (10 minutes)
 1. **Python 3.10+** on PATH (python.org, check "Add to PATH").

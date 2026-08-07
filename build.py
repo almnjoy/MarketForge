@@ -132,6 +132,11 @@ def main():
     step("zip")
     zip_dist()
     step(f"done -> {DIST}")
+    print(f"""
+  dist/ is BUILD OUTPUT and is wiped on every build - keys and state saved in
+  there do not survive a rebuild. To actually USE the desk, copy the folder
+  somewhere permanent (short path, e.g. C:\\MarketForge) and run it from there;
+  the wizard then asks for keys exactly once.""")
 
 
 if __name__ == "__main__":

@@ -82,7 +82,8 @@ hookLinks(document);
   if (!cached) { J('/api/meta').then(m => localStorage.setItem('mfSplashMs', String(m.splash_ms ?? 2500))).catch(() => {}); return; }
   const el = document.createElement('div');
   el.id = 'splash';
-  el.innerHTML = '<img src="/static/logo.svg" alt=""><div class="sp-word">MARKET<span>FORGE</span></div>';
+  // the mark carries its own wordmark - no duplicate text under it
+  el.innerHTML = '<img src="/static/logo.svg" alt="Market Forge">';
   document.body.appendChild(el);
   let gone = false;
   const lift = () => {

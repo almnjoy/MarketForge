@@ -14,6 +14,11 @@ Output: `dist/MarketForge/` (double-clickable folder) and
 `dist/MarketForge-win64.zip` (~21 MB). `build.py` refuses to ship if
 `bot/.env` or any personal state file lands in the dist.
 
+**Do not LIVE in dist/.** It is build output, wiped on every build - keys and
+state saved there die with the next `python build.py` (which is why testing
+from dist re-ran the key wizard on every rebuild). Copy the folder somewhere
+permanent and run from the copy; setup then happens exactly once.
+
 ## The shape of the build (and why)
 
 **One-folder, resources as sibling files.** PyInstaller one-file unpacks to

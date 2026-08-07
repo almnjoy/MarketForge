@@ -35,12 +35,15 @@ discipline **in code, not in willpower**.
 
 ## What you need
 
-**Required:** Python 3.10+ · git · Flask (one `pip install`) · a free
-[Alpaca](https://alpaca.markets) account (paper keys to start).
+**Required:** Python 3.10+ · git · one `pip install -r requirements.txt` · a free
+[Alpaca](https://alpaca.markets) account (paper keys to start). Or skip Python
+entirely: `python build.py` produces a double-clickable **MarketForge.exe**
+with a first-run setup wizard (see docs/PACKAGING.md).
 
-**Optional, each unlocking one thing:** an AI coding agent (the copilot) ·
-[Ollama](https://ollama.com) (catalyst scoring) · [Voicebox](https://voicebox.sh/) (a natural voice) ·
-Chrome/Edge (voice input) · a Discord webhook (phone alerts).
+**Optional, each unlocking one thing:** an AI coding agent (the copilot seat -
+it also scores radar catalysts signal-vs-noise, no other install needed) ·
+[Voicebox](https://voicebox.sh/) (a natural voice, and offline voice input) ·
+a Discord webhook (phone alerts).
 
 No Docker, no database, no Node, no cloud account. Details: [DEPENDENCIES.md](DEPENDENCIES.md).
 
