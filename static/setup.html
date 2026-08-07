@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Market Forge - setup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,650;1,9..144,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/tokens.css">
+<script>
+try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') || 'forge'; } catch (e) {}
+</script>
+<style>
+/* Wizard-only layout. ALL color comes from tokens.css - nothing hard-coded. */
+* { box-sizing: border-box; margin: 0; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--body);
+  font-size: 14.5px; line-height: 1.55; min-height: 100vh;
+  display: flex; flex-direction: column; align-items: center;
+  background-image: linear-gradient(var(--grid) 1px, transparent 1px),
+                    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+}
+.wrap { width: min(860px, 94vw); padding: 26px 0 60px; }
+/* the mark IS the wordmark - no text next to it, let it breathe */
+.brand { display: flex; justify-content: center; margin-bottom: 10px; }
+.brand img { height: 110px; filter: drop-shadow(0 0 34px rgba(255,106,0,.4)); }
+.kick {
+  color: var(--accent); font-style: var(--kicker-style); text-transform: var(--kicker-tt);
+  letter-spacing: var(--kicker-ls); font-size: 12px; margin-bottom: 26px;
+  text-align: center;
+}
+.dots { display: flex; gap: 7px; margin: 0 0 22px; }
+.dots i { width: 26px; height: 4px; border-radius: 2px; background: var(--border); transition: background .25s; }
+.dots i.on { background: var(--accent); }
+.dots i.done { background: var(--primary); }
+.card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 30px 34px;
+}
+h1 { font-family: var(--display); font-weight: 650; font-size: 27px; margin: 0 0 14px; }
+p  { color: var(--dim); margin: 0 0 12px; max-width: 640px; }
+p b, p strong { color: var(--fg); font-weight: 600; }
+.step { display: none; }
+.step.on { display: block; animation: rise .25s ease; }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .step.on { animation: none; } }
+label.f { display: block; margin: 14px 0 4px; color: var(--dim); font-size: 12.5px;
+  text-transform: uppercase; letter-spacing: .07em; }
+input[type=text], input[type=password], input[type=url] {
+  width: 100%; max-width: 520px; background: var(--panel2); color: var(--fg);
+  border: 1px solid var(--border); border-radius: var(--radius-s);
+  padding: 11px 13px; font-family: var(--mono); font-size: 14px; outline: none;
+}
+input:focus { border-color: var(--primary); }
+.btn {
+  display: inline-block; background: var(--accent); color: #fff; border: 0;
+  border-radius: var(--radius-s); padding: 11px 22px; font: 600 14px var(--sans);
+  cursor: pointer; margin-top: 20px;
+}
+.btn[disabled] { opacity: .45; cursor: default; }
+.btn.ghost { background: transparent; color: var(--dim); border: 1px solid var(--border); }
+.btn.sm { padding: 7px 13px; font-size: 12.5px; margin-top: 0; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.hintbox {
+  background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius-s);
+  padding: 14px 16px; margin: 16px 0 4px; font-size: 13px; color: var(--dim); max-width: 640px;
+}
+.hintbox ol { margin: 6px 0 10px 18px; padding: 0; }
+.hintbox li { margin: 3px 0; }
+.msg { font-family: var(--mono); font-size: 13px; margin-top: 12px; min-height: 18px; }
+.msg.ok { color: var(--gain); } .msg.err { color: var(--loss); }
+.choice { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; max-width: 640px; }
+.choice label {
+  display: block; border: 1px solid var(--border); border-radius: var(--radius-s);
+  background: var(--panel2); padding: 13px 15px; cursor: pointer;
+}
+.choice label:has(input:checked) { border-color: var(--accent); }
+.choice input { margin-right: 9px; accent-color: var(--accent); }
+.choice .d { color: var(--dim); font-size: 12.5px; margin: 4px 0 0 24px; }
+.extras { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; max-width: 640px; }
+.extra { border: 1px solid var(--border); border-radius: var(--radius-s);
+  background: var(--panel2); padding: 12px 15px; }
+.extra .h { display: flex; align-items: center; gap: 9px; font-weight: 600; }
+.extra .d { color: var(--dim); font-size: 12.5px; margin-top: 3px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+.dot.up { background: var(--gain2); box-shadow: 0 0 8px var(--gain); }
+.mono { font-family: var(--mono); }
+.pathbox { display: flex; gap: 8px; align-items: center; max-width: 640px; margin-top: 10px; }
+.pathbox input { flex: 1; }
+.fact { font-family: var(--mono); font-size: 15px; padding: 13px 16px; margin-top: 14px;
+  border: 1px solid var(--border); border-left: 3px solid var(--primary);
+  border-radius: var(--radius-s); background: var(--panel2); max-width: 640px; }
+.confirm { display: none; margin-top: 12px; padding: 12px 15px; max-width: 640px;
+  border: 1px solid var(--warn); border-radius: var(--radius-s); font-size: 13px; }
+.confirm.show { display: block; }
+.nav { display: flex; gap: 10px; margin-top: 8px; }
+.summary td { padding: 4px 18px 4px 0; }
+.summary td:first-child { color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <img src="/static/logo.svg" alt="Market Forge" onerror="this.style.display='none'">
+  </div>
+  <div class="kick">first-run setup · everything stays on this machine</div>
+  <div class="dots" id="dots"></div>
+
+  <div class="card">
+
+    <!-- 1 WELCOME -->
+    <section class="step on" data-step="0">
+      <h1>Your local trading desk.</h1>
+      <p>Market Forge runs entirely on this computer: a catalyst radar, live charts,
+         a trade ticket, and a seat for an AI copilot. It connects to
+         <b>Alpaca</b> for market data and (paper) trading.</p>
+      <p><b>Paper mode by default.</b> Fake money, real market data. Nothing trades
+         by itself unless you explicitly turn that on, and your API keys never leave
+         this machine - they are written to one local file, <span class="mono">bot/.env</span>.</p>
+      <button class="btn" onclick="go(1)">Get started</button>
+    </section>
+
+    <!-- 2 KEYS -->
+    <section class="step" data-step="1">
+      <h1>Connect Alpaca.</h1>
+      <p>A free Alpaca account gives you a paper-trading key pair.</p>
+      <div class="hintbox" id="keyHelp">
+        <b>Where do I get these?</b>
+        <ol>
+          <li>Sign up free at alpaca.markets</li>
+          <li>Open the <b>Paper</b> dashboard (toggle top-left)</li>
+          <li>On the right: <b>API Keys</b> &rarr; Generate</li>
+          <li>The <b>secret is shown once</b> - copy both now</li>
+        </ol>
+        <button class="btn sm ghost" onclick="ext('https://alpaca.markets')">Open alpaca.markets</button>
+      </div>
+      <div class="choice" style="flex-direction:row">
+        <label style="flex:1"><input type="radio" name="env" value="paper" checked>Paper <span class="d" style="display:block">fake money, real data - start here</span></label>
+        <label style="flex:1"><input type="radio" name="env" value="live">Live <span class="d" style="display:block">real money; auto-trading stays off unless you turn it on</span></label>
+      </div>
+      <label class="f">key id</label>
+      <input type="text" id="keyId" autocomplete="off" spellcheck="false">
+      <label class="f">secret key</label>
+      <input type="password" id="keySec" autocomplete="off">
+      <div class="msg" id="keyMsg"></div>
+      <div class="nav">
+        <button class="btn ghost" onclick="go(0)">Back</button>
+        <button class="btn" id="keyGo" onclick="validateKeys()">Validate &amp; continue</button>
+      </div>
+    </section>
+
+    <!-- 3 FEED (a fact, not a question) -->
+    <section class="step" data-step="2">
+      <h1>Market data.</h1>
+      <p>Checked automatically against your account:</p>
+      <div class="fact" id="feedFact">...</div>
+      <p style="margin-top:12px" class="mono" id="feedNote"></p>
+      <div class="nav">
+        <button class="btn ghost" onclick="go(1)">Back</button>
+        <button class="btn" onclick="go(3)">Continue</button>
+      </div>
+    </section>
+
+    <!-- 4 MODE -->
+    <section class="step" data-step="3">
+      <h1>How will you use it?</h1>
+      <div class="choice">
+        <label><input type="radio" name="mode" value="research" checked>Research only
+          <span class="d">radar, charts, chatter, copilot. No trading at all.</span></label>
+        <label><input type="radio" name="mode" value="manual">Research + manual trades
+          <span class="d">you place trades from the ticket; nothing automatic</span></label>
+        <label><input type="radio" name="mode" value="auto">Small automatic entries
+          <span class="d">hard-capped: $50 a trade, 2 a day, $150 total, trailing stop always armed</span></label>
+      </div>
+      <div class="confirm" id="autoConfirm">
+        <label><input type="checkbox" id="autoOk"> <span id="autoConfirmTxt">I understand
+        the bot will place small orders by itself inside those caps, and every entry
+        carries a trailing stop.</span></label>
+      </div>
+      <div class="nav">
+        <button class="btn ghost" onclick="go(2)">Back</button>
+        <button class="btn" id="modeGo" onclick="modeNext()">Continue</button>
+      </div>
+    </section>
+
+    <!-- 5 EXTRAS -->
+    <section class="step" data-step="4">
+      <h1>Optional extras.</h1>
+      <p>Each unlocks one feature. All of them can be added later - skipping is fine.</p>
+      <div class="extras">
+        <div class="extra">
+          <div class="h"><i class="dot" id="dotClaude"></i>AI copilot (claude on PATH)</div>
+          <div class="d">Powers the COPILOT tab (chat answers, live panel building, day
+            replays) AND scores radar catalysts signal-or-noise, 0-100 - no extra
+            install. Without it the desk still alerts, just without scores, and
+            auto-entries need scores.</div>
+        </div>
+        <div class="extra">
+          <div class="h"><i class="dot" id="dotVoicebox"></i>Voicebox</div>
+          <div class="d">A natural local voice for spoken replies, and offline voice input.
+            Without it: browser voice out, Chrome-only voice in.</div>
+        </div>
+        <div class="extra">
+          <div class="h"><i class="dot"></i>Discord alerts</div>
+          <div class="d">A webhook pushes scored catalysts to your phone. Paste one or leave blank.</div>
+          <input type="url" id="webhook" placeholder="https://discord.com/api/webhooks/..." style="margin-top:8px">
+        </div>
+      </div>
+      <div class="nav">
+        <button class="btn ghost" onclick="go(3)">Back</button>
+        <button class="btn" onclick="go(5)">Continue</button>
+      </div>
+    </section>
+
+    <!-- 6 COPILOT FOLDER -->
+    <section class="step" data-step="5">
+      <h1>Connect your copilot.</h1>
+      <p>Any coding agent (Claude Code, Cursor, Codex...) can take the copilot seat.
+         Point it at this folder - it reads <span class="mono">CLAUDE.md</span> and knows the desk:</p>
+      <div class="pathbox">
+        <input type="text" id="rootPath" readonly class="mono">
+        <button class="btn sm ghost" onclick="copyPath()">Copy</button>
+      </div>
+      <p style="margin-top:14px">Easiest start: open a terminal in that folder and run
+         <span class="mono">claude</span>. This step is optional - the desk works without it.</p>
+      <div class="nav">
+        <button class="btn ghost" onclick="go(4)">Back</button>
+        <button class="btn" onclick="fillSummary();go(6)">Continue</button>
+      </div>
+    </section>
+
+    <!-- 7 DONE -->
+    <section class="step" data-step="6">
+      <h1>Ready.</h1>
+      <table class="summary mono" id="summary"></table>
+      <p style="margin-top:14px">Saving writes <span class="mono">bot/.env</span> and starts
+         the engine. You can rerun this any time at <span class="mono">/setup</span>.</p>
+      <div class="msg" id="saveMsg"></div>
+      <div class="nav">
+        <button class="btn ghost" onclick="go(5)">Back</button>
+        <button class="btn" id="saveGo" onclick="save()">Save &amp; open the desk</button>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+'use strict';
+const $ = (s) => document.querySelector(s);
+const J = async (url, opt) => { const r = await fetch(url, opt); return r.json(); };
+const POST = (url, body) => J(url, { method: 'POST',
+  headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+const STEPS = 7;
+let step = 0, feed = null, account = null, shellKind = 'browser', claudeUp = false;
+let stored = { paper: false, live: false };   // env has a usable saved key pair
+const keepable = () => stored[document.querySelector('input[name=env]:checked').value];
+function keyHints() {
+  const keep = keepable();
+  $('#keyId').placeholder = keep ? 'leave blank to keep your current keys' : '';
+  $('#keySec').placeholder = keep ? 'leave blank to keep your current keys' : '';
+}
+$('#dots').innerHTML = Array.from({ length: STEPS }, () => '<i></i>').join('');
+
+function go(n) {
+  step = n;
+  document.querySelectorAll('.step').forEach(s =>
+    s.classList.toggle('on', Number(s.dataset.step) === n));
+  document.querySelectorAll('#dots i').forEach((d, i) =>
+    d.className = i === n ? 'on' : i < n ? 'done' : '');
+  window.scrollTo(0, 0);
+}
+
+/* External links open in the SYSTEM browser when we are inside a shell.
+   In a plain browser the endpoint is a no-op-ish and window.open is right. */
+function ext(url) {
+  if (shellKind === 'browser') { window.open(url, '_blank'); return; }
+  POST('/api/shell/open', { url }).catch(() => window.open(url, '_blank'));
+}
+
+async function validateKeys() {
+  const env = document.querySelector('input[name=env]:checked').value;
+  const key_id = $('#keyId').value.trim(), secret = $('#keySec').value.trim();
+  const m = $('#keyMsg');
+  // both blank + a stored pair for this env = keep current (server substitutes)
+  if ((!key_id || !secret) && !(!key_id && !secret && keepable())) {
+    m.className = 'msg err'; m.textContent = 'both fields are required'; return;
+  }
+  $('#keyGo').disabled = true; m.className = 'msg'; m.textContent = 'checking with Alpaca...';
+  try {
+    const r = await POST('/api/setup/validate-keys', { env, key_id, secret });
+    if (!r.ok) { m.className = 'msg err'; m.textContent = '✗ ' + (r.error || 'validation failed'); return; }
+    feed = r.feed; account = r.account;
+    m.className = 'msg ok';
+    m.textContent = `✓ keys work - account ${String(r.account.status || '?').toLowerCase()}, equity $${Number(r.account.equity || 0).toLocaleString()}`;
+    $('#feedFact').textContent = feed === 'sip'
+      ? 'REAL-TIME (SIP) - full consolidated tape, all exchanges'
+      : feed === 'iex'
+        ? 'Free IEX feed - a real-time slice of total volume'
+        : 'Could not check - defaulting to the free IEX feed';
+    $('#feedNote').textContent = feed === 'sip' ? ''
+      : 'Alpaca sells real-time SIP as an add-on. Subscribe later, rerun /setup, and it switches automatically.';
+    setTimeout(() => go(2), 650);
+  } catch (e) {
+    m.className = 'msg err'; m.textContent = '✗ ' + e.message;
+  } finally { $('#keyGo').disabled = false; }
+}
+
+/* auto mode needs a second explicit confirm - and on a LIVE account it says
+   REAL MONEY in so many words, exactly like the terminal wizard does */
+function syncAutoConfirm() {
+  const auto = document.querySelector('input[name=mode]:checked')?.value === 'auto';
+  const live = document.querySelector('input[name=env]:checked')?.value === 'live';
+  $('#autoConfirmTxt').textContent = live
+    ? 'This is REAL money. Both auto switches will be armed - the bot will place small live orders by itself inside those caps, every entry with a trailing stop. My choice.'
+    : 'I understand the bot will place small orders by itself inside those caps, and every entry carries a trailing stop.';
+  $('#autoConfirm').classList.toggle('show', auto);
+}
+document.querySelectorAll('input[name=mode]').forEach(r => r.onchange = syncAutoConfirm);
+document.querySelectorAll('input[name=env]').forEach(r => r.addEventListener('change', syncAutoConfirm));
+function modeNext() {
+  const mode = document.querySelector('input[name=mode]:checked').value;
+  if (mode === 'auto' && !$('#autoOk').checked) {
+    $('#autoConfirm').classList.add('show');
+    $('#autoConfirm').style.borderColor = 'var(--loss)';
+    return;
+  }
+  go(4);
+}
+
+function copyPath() {
+  const el = $('#rootPath'); el.select();
+  const fallback = () => { try { document.execCommand('copy'); } catch {} };
+  // writeText fails via a REJECTED PROMISE, which a try/catch never sees
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(el.value).catch(fallback);
+  else fallback();
+}
+
+function answers() {
+  return {
+    env: document.querySelector('input[name=env]:checked').value,
+    key_id: $('#keyId').value.trim(),
+    secret: $('#keySec').value.trim(),
+    mode: document.querySelector('input[name=mode]:checked').value,
+    feed,
+    webhook: $('#webhook').value.trim(),
+  };
+}
+
+function fillSummary() {
+  const a = answers();
+  $('#summary').innerHTML = [
+    ['Account', a.env.toUpperCase()],
+    ['Data feed', (feed || 'iex').toUpperCase() + (feed === 'sip' ? ' (real-time)' : ' (free)')],
+    ['Mode', a.mode],
+    ['Scoring', claudeUp ? 'via your coding agent' : 'agent not found - alerts without scores'],
+    ['Alerts', a.webhook ? 'Discord webhook' : 'off'],
+  ].map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+}
+
+async function save() {
+  const m = $('#saveMsg'); $('#saveGo').disabled = true;
+  m.className = 'msg'; m.textContent = 'writing bot/.env and starting the engine...';
+  try {
+    const r = await POST('/api/setup/save', answers());
+    if (!r.ok) { m.className = 'msg err'; m.textContent = '✗ ' + (r.error || 'save failed'); $('#saveGo').disabled = false; return; }
+    m.className = 'msg ok'; m.textContent = '✓ saved - opening the desk...';
+    setTimeout(() => { location.href = '/'; }, 1800);
+  } catch (e) {
+    m.className = 'msg err'; m.textContent = '✗ ' + e.message; $('#saveGo').disabled = false;
+  }
+}
+
+/* boot: prefill from current state, light the extras dots */
+(async () => {
+  try { const s = await J('/api/shell'); shellKind = s.shell || 'browser'; } catch {}
+  try {
+    const st = await J('/api/setup/state');
+    $('#rootPath').value = st.root || '';
+    stored = { paper: !!st.has_paper_keys, live: !!st.has_live_keys };
+    if (st.stock_env === 'live') document.querySelector('input[name=env][value=live]').checked = true;
+    keyHints();
+    document.querySelectorAll('input[name=env]').forEach(r => r.addEventListener('change', keyHints));
+    const mr = document.querySelector(`input[name=mode][value=${st.mode}]`);
+    if (mr) { mr.checked = true; mr.onchange(); }
+  } catch {}
+  try {
+    const p = await J('/api/setup/probe-extras');
+    claudeUp = !!p.claude;
+    $('#dotVoicebox').classList.toggle('up', !!p.voicebox);
+    $('#dotClaude').classList.toggle('up', claudeUp);
+  } catch {}
+})();
+</script>
+</body>
+</html>

@@ -41,6 +41,72 @@ function initTheme(cfgTheme) {
 }
 initTheme();
 
+/* ---------- shell awareness ----------
+   Feature-detect, never shell-detect: /api/shell says what the host can do.
+   The page must not know or care WHICH shell it is in beyond that - the same
+   frontend runs in Chrome, pywebview, or anything else. */
+let shellInfo = { shell: 'browser' };
+function extOpen(url) {
+  // In a webview an unhandled target=_blank either does nothing or traps you
+  // in a chromeless window; route outbound links to the SYSTEM browser there.
+  if (shellInfo.shell === 'browser') { window.open(url, '_blank'); return; }
+  J('/api/shell/open', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }) }).catch(() => {});
+}
+function hookLinks(doc) {
+  doc.addEventListener('click', (e) => {
+    if (shellInfo.shell === 'browser') return;
+    const a = e.target && e.target.closest && e.target.closest('a[href]');
+    if (!a) return;
+    // Real URL parse, not a string prefix: "http://127.0.0.1:8410@evil.com"
+    // serializes with our origin as USERINFO and beats a startsWith check,
+    // and so does a port that merely extends ours (:84109).
+    let u;
+    try { u = new URL(a.href, location.href); } catch { return; }
+    if (!/^https?:$/.test(u.protocol) || u.origin === location.origin) return;
+    e.preventDefault(); e.stopPropagation();
+    extOpen(u.href);
+  }, true);
+}
+hookLinks(document);
+(async () => { try { shellInfo = await J('/api/shell'); } catch {} })();
+
+/* ---------- splash ----------
+   Mounted synchronously so there is no flash of desk first; every fetch below
+   keeps running underneath it, so the desk is already populated when it lifts
+   (a splash that gates loading just trades a logo for a spinner). Any click or
+   key skips it. splash_ms in config.json tunes it; 0 disables (cached locally
+   so a disabled splash never even mounts on later visits). */
+(() => {
+  const cached = Number(localStorage.getItem('mfSplashMs') ?? '2500');
+  if (!cached) { J('/api/meta').then(m => localStorage.setItem('mfSplashMs', String(m.splash_ms ?? 2500))).catch(() => {}); return; }
+  const el = document.createElement('div');
+  el.id = 'splash';
+  // the mark carries its own wordmark - no duplicate text under it
+  el.innerHTML = '<img src="/static/logo.svg" alt="Market Forge">';
+  document.body.appendChild(el);
+  let gone = false;
+  const lift = () => {
+    if (gone) return; gone = true;
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 500);
+    removeEventListener('keydown', lift, true);
+  };
+  el.addEventListener('click', lift);
+  addEventListener('keydown', lift, true);
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const t0 = performance.now();
+  let timer = setTimeout(lift, reduced ? 900 : cached);
+  J('/api/meta').then(m => {
+    const ms = Number(m.splash_ms ?? 2500);
+    localStorage.setItem('mfSplashMs', String(ms));
+    if (!ms) { lift(); return; }
+    if (reduced) return;               // reduced-motion cut stays short
+    clearTimeout(timer);
+    timer = setTimeout(lift, Math.max(150, ms - (performance.now() - t0)));
+  }).catch(() => {});
+})();
+
 /* ---------- tabs ---------- */
 document.querySelectorAll('#tabs button').forEach((b) => b.onclick = () => {
   document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x === b));
@@ -397,9 +463,11 @@ async function loadPanels(force = false) {
     const fr = document.createElement('iframe');
     fr.sandbox = 'allow-scripts allow-same-origin allow-popups';
     fr.src = `/api/panel?name=${encodeURIComponent(p.name)}&v=${p.mtime}`;
-    // an iframe is its own document and does NOT inherit [data-theme]
+    // an iframe is its own document and does NOT inherit [data-theme]; it also
+    // needs the external-link hook or a panel's news links die inside a shell
     fr.onload = () => { try {
       fr.contentDocument.documentElement.dataset.theme = document.documentElement.dataset.theme;
+      hookLinks(fr.contentDocument);
     } catch {} };
     card.appendChild(fr); wb.appendChild(card);
     watchResize(card, p.name);
@@ -506,6 +574,7 @@ function openSavedReader(board) {
     fr.src = `/api/saved/panel?board=${encodeURIComponent(board)}&name=${encodeURIComponent(f.name)}&v=${f.mtime}`;
     fr.onload = () => { try {
       fr.contentDocument.documentElement.dataset.theme = document.documentElement.dataset.theme;
+      hookLinks(fr.contentDocument);   // saved pages carry links too
     } catch {} };
     body.appendChild(fr);
   }
@@ -866,28 +935,47 @@ window.stopAll = async () => {
 $('#stopBtn').onclick = window.stopAll;
 
 let speakingNow = false;  // echo guard: hot mic ignores itself while the copilot talks
+let noVoiceWarned = false;
 async function speakText(text) {
   if (!text) return;
   if (vbOk) {
     try {
-      const r = await fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: text.slice(0, 900) }) });
+      // Hard client-side cap: a wedged Voicebox once held this fetch open for
+      // minutes and the desk just looked mute. Better a visible fallback.
+      const r = await fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text.slice(0, 900) }),
+        signal: AbortSignal.timeout ? AbortSignal.timeout(60000) : undefined });
       if (r.ok && (r.headers.get('Content-Type') || '').includes('audio')) {
         const blob = await r.blob();
         audioEl?.pause();
         audioEl = new Audio(URL.createObjectURL(blob));
         speakingNow = true;
         audioEl.onended = audioEl.onerror = () => { setTimeout(() => { speakingNow = false; }, 400); };
-        audioEl.play();
+        // play() fails via a REJECTED PROMISE (autoplay policy, device gone) -
+        // unhandled, that was a desk that just silently never spoke
+        audioEl.play().catch((e) => {
+          speakingNow = false;
+          notify(`voice: playback blocked (${e.name || e.message})`, 'warn');
+        });
         return;
       }
     } catch { /* fall through to browser voice */ }
     vbHealth();
   }
-  if ('speechSynthesis' in window) {
+  // gate on a real browser: WebView2 may EXPOSE speechSynthesis yet render
+  // nothing, which reads as "voice randomly broken" instead of an honest miss
+  if ('speechSynthesis' in window && shellInfo.shell === 'browser') {
     const u = new SpeechSynthesisUtterance(text.slice(0, 600)); u.rate = 1.05;
     speakingNow = true;
     u.onend = u.onerror = () => { setTimeout(() => { speakingNow = false; }, 400); };
     speechSynthesis.speak(u);
+    return;
+  }
+  // WebView2 has NO Web Speech API: inside a shell with Voicebox down there is
+  // no voice at all - say so once instead of being silently mute.
+  if (!noVoiceWarned) {
+    noVoiceWarned = true;
+    notify('voice: Voicebox unreachable and this window has no built-in voice', 'warn');
   }
 }
 async function sendChat() {
@@ -918,35 +1006,234 @@ $('#chatInput').addEventListener('keydown', (e) => {
 });
 
 /* voice in: push-to-talk (#micBtn, COPILOT tab) + HOT MIC (#hotMic, topbar - always
-   listening from ANY tab; the whole app is one page so tabs don't matter). Echo-guarded:
-   anything heard while the copilot is speaking gets discarded. Chrome caps continuous
-   sessions, so hot mic auto-restarts on end. */
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-if (SR) {
-  const rec = new SR(); rec.lang = 'en-US'; rec.interimResults = true;
-  let on = false;
-  rec.onresult = (e) => { $('#chatInput').value = [...e.results].map(r => r[0].transcript).join(''); };
-  rec.onend = () => { $('#micBtn').classList.remove('rec'); on = false; if ($('#chatInput').value.trim()) sendChat(); };
-  $('#micBtn').onclick = () => { on ? rec.stop() : (rec.start(), $('#micBtn').classList.add('rec'), on = true); };
+   listening from ANY tab). Echo-guarded: anything heard while the copilot is
+   speaking gets discarded.
 
-  const hot = new SR(); hot.lang = 'en-US'; hot.continuous = true; hot.interimResults = false;
-  let hotOn = false;
-  hot.onresult = (e) => {
-    if (speakingNow) return;                       // that's our own voice - drop it
-    const text = [...e.results].slice(e.resultIndex).map(r => r[0].transcript).join(' ').trim();
-    if (text.length > 2) {
-      J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text } ) }).then(loadChat);
+   TWO ENGINES, picked live:
+   1) PREFERRED: MediaRecorder -> POST /api/stt (Voicebox whisper, local).
+      MediaRecorder exists in every modern engine, unlike SpeechRecognition -
+      WebView2 has NO Web Speech API, which is exactly how the old hot mic died
+      the moment the desk left Chrome. Bonus: fully offline, no Google.
+   2) FALLBACK: browser SpeechRecognition (Chrome/Edge) when Voicebox is absent.
+   Neither available -> buttons disabled with an honest tooltip. */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let sttOk = false;
+async function sttHealth() {
+  try { sttOk = !!(await J('/api/stt/health')).ok; } catch { sttOk = false; }
+  return sttOk;
+}
+
+/* --- engine 1: raw-PCM WAV capture + /api/stt -----------------------------
+   Why WAV and not MediaRecorder: MediaRecorder's container is engine roulette
+   (webm/opus in Chrome and WebView2, mp4 elsewhere) and Voicebox /transcribe
+   500s on webm - reproduced 2026-08-06, and exactly the error the first exe
+   test hit. Whisper's home format is plain PCM WAV, so we tap the raw samples
+   with a ScriptProcessor and build the WAV ourselves. Works identically in
+   every engine; bonus: the hot mic gets a real pre-roll (no clipped first
+   syllable, which the restart-a-recorder approach could never fix). */
+let micStream = null;
+async function getMic() {
+  if (micStream && micStream.active) return micStream;
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true } });
+  return micStream;
+}
+function dropMic() {
+  try { micStream?.getTracks().forEach(t => t.stop()); } catch {}
+  micStream = null;
+}
+function wavEncode(chunks, sampleRate) {
+  let n = 0;
+  for (const c of chunks) n += c.length;
+  const pcm = new Int16Array(n);
+  let o = 0;
+  for (const c of chunks)
+    for (let i = 0; i < c.length; i++) {
+      const s = Math.max(-1, Math.min(1, c[i]));
+      pcm[o++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+  const buf = new ArrayBuffer(44 + pcm.length * 2);
+  const v = new DataView(buf);
+  const tag = (off, str) => { for (let i = 0; i < str.length; i++) v.setUint8(off + i, str.charCodeAt(i)); };
+  tag(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); tag(8, 'WAVE');
+  tag(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true); v.setUint32(24, sampleRate, true);
+  v.setUint32(28, sampleRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  tag(36, 'data'); v.setUint32(40, pcm.length * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  return new Blob([buf], { type: 'audio/wav' });
+}
+function startWav(stream) {
+  // ScriptProcessor is deprecated-but-everywhere (incl. WebView2); AudioWorklet
+  // needs a module file and buys nothing for a local app.
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const rec = { ctx, chunks: [], rate: ctx.sampleRate };
+  rec.proc = ctx.createScriptProcessor(4096, 1, 1);
+  rec.proc.onaudioprocess = (e) => rec.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  ctx.createMediaStreamSource(stream).connect(rec.proc);
+  rec.proc.connect(ctx.destination);   // unconnected processors never pump
+  return rec;
+}
+function stopWav(rec) {
+  try { rec.proc.disconnect(); } catch {}
+  try { rec.ctx.close(); } catch {}
+  return wavEncode(rec.chunks, rec.rate);
+}
+async function transcribe(blob) {
+  try {
+    const r = await fetch('/api/stt', { method: 'POST',
+      headers: { 'Content-Type': 'audio/wav' }, body: blob });
+    const d = await r.json().catch(() => ({}));
+    if (!d.ok) throw new Error(d.error || 'transcribe failed');
+    return (d.text || '').trim();
+  } catch (e) {
+    sttOk = false;   // un-latch: next click re-probes health and can fall back to SR
+    throw e;
+  }
+}
+
+/* push-to-talk: click = record, click again = stop -> transcribe -> send */
+let ptt = null, pttBusy = false;
+async function pttToggle() {
+  if (ptt) {
+    const rec = ptt; ptt = null;
+    $('#micBtn').classList.remove('rec');
+    const blob = stopWav(rec);
+    if (!hotOn && !hotProc) dropMic();            // last consumer: mic light off
+    if (rec.chunks.length * 4096 / rec.rate < 0.35) return;   // click-click, not speech
+    $('#chatInput').placeholder = 'transcribing...';
+    try {
+      const text = await transcribe(blob);
+      $('#chatInput').value = text;
+      if (text) sendChat();
+    } catch (e) { notify('voice: ' + e.message, 'err'); }
+    $('#chatInput').placeholder = 'Ask anything about the market, or tell me what to build...';
+    return;
+  }
+  if (pttBusy) return;                            // getMic() still awaiting
+  pttBusy = true;
+  try {
+    const stream = await getMic();
+    ptt = startWav(stream);
+    $('#micBtn').classList.add('rec');
+  } catch (e) {
+    ptt = null; notify('mic: ' + e.message, 'err');
+    if (!hotOn && !hotProc) dropMic();
+  } finally { pttBusy = false; }
+}
+
+/* hot mic: voice-activity chunking on the same sample tap. A ring buffer keeps
+   ~350ms of pre-roll so the first syllable survives; ~1.2s of silence closes
+   the utterance; anything heard while the copilot is speaking is discarded. */
+let hotOn = false, hotProc = null, hotCtx = null, hotWarned = false;
+async function hotStart() {
+  const stream = await getMic();
+  if (!hotOn) {                                    // toggled off mid-await
+    if (!ptt) dropMic();
+    return;
+  }
+  if (hotProc) { try { hotProc.disconnect(); } catch {} }   // never two VAD taps
+  hotCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const rate = hotCtx.sampleRate;
+  const THRESH = 0.015, SILENCE_MS = 1200, MIN_MS = 450, MAX_MS = 25000, PRE = 4;
+  let ring = [], talking = false, buf = [], lastVoice = 0, started = 0, echo = false;
+  hotProc = hotCtx.createScriptProcessor(4096, 1, 1);
+  hotProc.onaudioprocess = (e) => {
+    if (!hotOn) return;
+    const data = new Float32Array(e.inputBuffer.getChannelData(0));
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+    const rms = Math.sqrt(sum / data.length), now = performance.now();
+    if (!talking) {
+      ring.push(data);
+      if (ring.length > PRE) ring.shift();
+      if (rms > THRESH && !speakingNow) {
+        talking = true; echo = false; started = now; lastVoice = now;
+        buf = ring.slice(); ring = [];             // pre-roll seeds the utterance
+      }
+      return;
+    }
+    buf.push(data);
+    if (rms > THRESH) lastVoice = now;
+    if (speakingNow) echo = true;                  // TTS lit up mid-utterance
+    if (now - lastVoice > SILENCE_MS || now - started > MAX_MS) {
+      talking = false;
+      const utter = buf, ms = now - started;
+      buf = [];
+      if (echo || ms < MIN_MS) return;
+      transcribe(wavEncode(utter, rate)).then((text) => {
+        if (text.length > 2)
+          J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }) }).then(loadChat);
+      }).catch(() => {                             // fail quiet, but say it ONCE
+        if (!hotWarned) { hotWarned = true; notify('hot mic: transcription failing - is Voicebox up?', 'warn'); }
+      });
     }
   };
-  hot.onend = () => { if (hotOn) { try { hot.start(); } catch {} } };   // Chrome kills long sessions - relight
-  hot.onerror = (e) => { if (e.error === 'not-allowed') { hotOn = false; $('#hotMic').classList.remove('on'); } };
-  $('#hotMic').onclick = () => {
-    hotOn = !hotOn;
-    $('#hotMic').classList.toggle('on', hotOn);
-    $('#hotMic').textContent = hotOn ? '🎙 hot mic ON' : '🎙 hot mic';
-    try { hotOn ? hot.start() : hot.stop(); } catch {}
+  hotCtx.createMediaStreamSource(stream).connect(hotProc);
+  hotProc.connect(hotCtx.destination);
+}
+function hotStop() {
+  try { hotProc?.disconnect(); } catch {}
+  hotProc = null;
+  try { hotCtx?.close(); } catch {}
+  hotCtx = null;
+  if (!ptt) dropMic();   // PTT may still be mid-recording on the shared stream
+}
+
+/* --- engine 2: legacy SpeechRecognition (Chrome/Edge, needs Google) ------- */
+let srPtt = null, srHot = null;
+function srPttToggle() {
+  if (srPtt) { srPtt.stop(); return; }
+  srPtt = new SR(); srPtt.lang = 'en-US'; srPtt.interimResults = true;
+  srPtt.onresult = (e) => { $('#chatInput').value = [...e.results].map(r => r[0].transcript).join(''); };
+  srPtt.onend = () => { $('#micBtn').classList.remove('rec'); srPtt = null; if ($('#chatInput').value.trim()) sendChat(); };
+  srPtt.start(); $('#micBtn').classList.add('rec');
+}
+function srHotStart() {
+  srHot = new SR(); srHot.lang = 'en-US'; srHot.continuous = true; srHot.interimResults = false;
+  srHot.onresult = (e) => {
+    if (speakingNow) return;
+    const text = [...e.results].slice(e.resultIndex).map(r => r[0].transcript).join(' ').trim();
+    if (text.length > 2)
+      J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }) }).then(loadChat);
   };
-} else { $('#micBtn').title = 'voice needs Chrome/Edge'; $('#micBtn').disabled = true; $('#hotMic').disabled = true; }
+  srHot.onend = () => { if (hotOn) { try { srHot.start(); } catch {} } };  // Chrome kills long sessions - relight
+  srHot.onerror = (e) => { if (e.error === 'not-allowed') hotToggle(false); };
+  srHot.start();
+}
+function srHotStop() { try { srHot?.stop(); } catch {} srHot = null; }
+
+/* --- wiring: pick an engine at click time -------------------------------- */
+const hasAudio = !!(navigator.mediaDevices
+  && (window.AudioContext || window.webkitAudioContext));
+$('#micBtn').onclick = async () => {
+  if (ptt || srPtt) { ptt ? pttToggle() : srPtt.stop(); return; }
+  if (hasAudio && (sttOk || await sttHealth())) return pttToggle();
+  if (SR) return srPttToggle();
+  notify('voice input needs Voicebox running, or Chrome/Edge', 'warn');
+};
+async function hotToggle(next = !hotOn) {
+  hotOn = next;
+  $('#hotMic').classList.toggle('on', hotOn);
+  $('#hotMic').textContent = hotOn ? '🎙 hot mic ON' : '🎙 hot mic';
+  if (!hotOn) { hotStop(); srHotStop(); return; }
+  hotWarned = false;
+  try {
+    if (hasAudio && (sttOk || await sttHealth())) return await hotStart();
+    if (SR) return srHotStart();
+    notify('voice input needs Voicebox running, or Chrome/Edge', 'warn');
+    hotToggle(false);
+  } catch (e) { notify('mic: ' + e.message, 'err'); hotToggle(false); }
+}
+$('#hotMic').onclick = () => hotToggle();
+sttHealth().then(() => {
+  if (!sttOk && !SR && !hasAudio) {
+    $('#micBtn').title = 'voice needs Voicebox, or Chrome/Edge';
+    $('#micBtn').disabled = true; $('#hotMic').disabled = true;
+  }
+});
 
 /* ---------- trade ticket ---------- */
 let tk = { symbol: '', side: 'buy' };

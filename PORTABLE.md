@@ -3,10 +3,20 @@
 One folder = the whole desk: bot engine (scanner, gates, auto-trader), dashboard,
 and the AI copilot seat. No Docker, no servers, your keys never leave the machine.
 
-## Setup (10 minutes)
+## Zero-install option: MarketForge.exe
+If you got the **desktop build** (`MarketForge-win64.zip`), there is no step 1:
+unzip somewhere SHORT (`C:\MarketForge` beats ten nested folders - Windows
+path-length limits are real), double-click `MarketForge.exe`, and the setup
+wizard walks you through your Alpaca keys in a native window - once. Everything
+below still applies - same folder, same files, same knobs. Build it yourself
+with `python build.py` (see `docs/PACKAGING.md`) - and then run a COPY, not
+`dist/` itself, because builds wipe that folder along with any keys in it.
+
+## Setup from source (10 minutes)
 1. **Python 3.10+** on PATH (python.org, check "Add to PATH").
 2. Copy `bot\.env.template` -> `bot\.env`, add your **Alpaca PAPER keys**
    (free at alpaca.markets). It STARTS in paper mode with auto-trading OFF.
+   Or skip this: the dashboard serves the same setup wizard on first run.
 3. Double-click **run-portable.bat** -> http://localhost:8410
    (one window runs the dashboard AND the engine. **stop.bat** stops everything
    and verifies nothing is left listening - worth using, because closing a
@@ -14,8 +24,8 @@ and the AI copilot seat. No Docker, no servers, your keys never leave the machin
 4. Optional but worth it:
    - **Claude Code CLI** (or another coding agent) logged in -> the COPILOT tab
      comes alive: chat/voice answers, panel building, day replays.
-   - **Ollama** (`ollama pull qwen2.5:3b`) -> flip `RADAR_USE_LLM=true` and the
-     radar scores catalysts signal-vs-noise instead of alert-only.
+   - With the agent installed the radar also SCORES catalysts signal-vs-noise
+     (0-100) - no Ollama, no extra install. Model knob: `RADAR_AGENT_MODEL`.
    - **[Voicebox](https://voicebox.sh/)** with a Kokoro voice -> spoken replies (browser voice otherwise).
 
 ## Make it YOURS

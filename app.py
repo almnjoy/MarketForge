@@ -26,11 +26,44 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-STATIC = ROOT / "static"
+import setup_core   # shared setup logic - the /api/setup/* endpoints and the
+                    # terminal wizard (setup.py) call the SAME functions
+
+FROZEN = bool(getattr(sys, "frozen", False))
+
+
+def _app_root() -> Path:
+    # Frozen (PyInstaller one-folder): the app folder is the one holding the
+    # exe. Everything lives there as plain files - panels/, chat-*.jsonl,
+    # memory.md, bot/ - because the folder IS the product surface agents read
+    # and write. __file__ would point into the bundle and break all of it.
+    if FROZEN:
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+ROOT = _app_root()
+
+
+def resource_path(rel: str) -> Path:
+    """Resolve a shipped read-only resource (static/, bundled docs).
+
+    This build ships resources as SIBLING FILES of the exe, not as data inside
+    the bundle, so the normal answer is ROOT/rel in both dev and frozen runs.
+    sys._MEIPASS is still honored first in case a resource is ever moved into
+    the bundle proper."""
+    mei = getattr(sys, "_MEIPASS", None)
+    if mei and (Path(mei) / rel).exists():
+        return Path(mei) / rel
+    return ROOT / rel
+
+
+STATIC = resource_path("static")
 PANELS = ROOT / "panels"
 INBOX = ROOT / "chat-inbox.jsonl"
 OUTBOX = ROOT / "chat-outbox.jsonl"
@@ -71,13 +104,31 @@ except Exception:
 # makes this server spawn the bot engine from bot/run_bot.py and point itself at
 # it - one folder, one command, no server, no Docker.
 EMBEDDED = os.environ.get("MF_EMBEDDED", "").strip() == "1" or bool(_cfg.get("embedded"))
+# Engine port: MF_BOT_PORT wins, same reasoning as MF_PORT below. Two desks side
+# by side need DISTINCT engine ports too - both on 8796 means the second desk
+# silently proxies the first desk's account. The supervisor passes this to the
+# engine child as API_PORT (a real env var beats bot/.env in config.py), so one
+# knob moves both sides of the proxy together.
+BOT_PORT = int(os.environ.get("MF_BOT_PORT") or _cfg.get("bot_port", 8796))
 if EMBEDDED:
-    _cfg["bot_base"] = f"http://127.0.0.1:{int(_cfg.get('bot_port', 8796))}"
+    _cfg["bot_base"] = f"http://127.0.0.1:{BOT_PORT}"
 BOT = str(_cfg["bot_base"]).rstrip("/")
 # Port: MF_PORT wins over config.json so the LIVE and PAPER desks can run side by
 # side on different ports. They used to share 8410, which meant whichever started
 # first owned the URL and the second silently served the wrong account.
 PORT = int(os.environ.get("MF_PORT") or _cfg["port"])
+
+# Windowed builds (pyinstaller --noconsole) have no console to hand to helper
+# processes: without these flags every tasklist/taskkill/claude call flashes a
+# console window, and an unset stdin can surface as WinError 6 because there is
+# no valid handle to inherit.
+NOWIN = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+
+# Shell integration. app.py NEVER imports pywebview - staying stdlib-only is a
+# hard rule. shell.py registers itself here at boot; in a plain browser these
+# defaults stand and /api/shell/* answers honestly that there is nothing to do.
+SHELL = {"shell": "browser", "can_focus": False}
+SHELL_HOOKS = {}   # shell.py may register: focus() -> bring the window forward
 
 
 BOT_PID = ROOT / "bot" / "data" / "engine.pid"
@@ -87,7 +138,8 @@ def _pid_alive(pid):
     try:
         if os.name == "nt":
             out = subprocess.run(["tasklist", "/FI", f"PID eq {int(pid)}"],
-                                 capture_output=True, text=True, timeout=8).stdout
+                                 capture_output=True, text=True, timeout=8,
+                                 stdin=subprocess.DEVNULL, **NOWIN).stdout
             return str(int(pid)) in out
         os.kill(int(pid), 0)
         return True
@@ -113,7 +165,8 @@ def _kill_stale_engine():
             print(f"[embedded bot] killing orphaned engine pid {pid} from a previous run")
             if os.name == "nt":
                 subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
-                               capture_output=True, timeout=10)
+                               capture_output=True, timeout=10,
+                               stdin=subprocess.DEVNULL, **NOWIN)
             else:
                 os.kill(pid, 9)
             time.sleep(1)
@@ -122,21 +175,103 @@ def _kill_stale_engine():
         print(f"[embedded bot] stale-pid check failed: {e}")
 
 
+# Set by /api/setup/save after it rewrites bot/.env and kills the engine:
+# tells the supervisor to respawn immediately instead of riding out backoff.
+ENGINE_KICK = threading.Event()
+# Set at shutdown: the supervisor must stop respawning and stay down.
+ENGINE_STOP = threading.Event()
+
+
+def _setup_key_pair(envn: str, body: dict):
+    """The submitted key pair, or - when BOTH fields arrive empty - the pair
+    already stored for that env. Mirrors the terminal wizard's keep-current
+    defaults so re-running /setup does not force retyping a secret Alpaca only
+    ever showed once. One empty field is a typo, not intent: no substitution."""
+    key = str(body.get("key_id") or "").strip()
+    sec = str(body.get("secret") or "").strip()
+    if key or sec:
+        return key, sec
+    cur = setup_core.read_env()
+    if envn == "live":
+        k, s = cur.get("ALPACA_LIVE_KEY_ID", ""), cur.get("ALPACA_LIVE_SECRET_KEY", "")
+    else:
+        k, s = cur.get("ALPACA_KEY_ID", ""), cur.get("ALPACA_SECRET_KEY", "")
+    if k and s and not (k.startswith("YOUR_") or s.startswith("YOUR_")):
+        return k, s
+    return key, sec
+
+
+def stop_engine():
+    """Deterministic engine kill for shutdown paths.
+
+    PROVEN NECESSARY: relying on the supervisor's atexit hook alone left a live
+    engine behind when the pywebview shell exited (dev test 2026-08-06) - and
+    Windows console-close never ran atexit either, which is why the stale-pid
+    kill on startup exists. Shutdown paths call THIS synchronously; atexit and
+    the startup sweep stay as backstops."""
+    ENGINE_STOP.set()
+    _kill_stale_engine()   # kills the pid on file, removes the file
+
+
 def _bot_supervisor():
-    """Keep the embedded bot engine alive: spawn, watch, restart with backoff."""
+    """Keep the embedded bot engine alive: spawn, watch, restart with backoff.
+
+    The child argv is [sys.executable, bot/run_bot.py] in BOTH dev and frozen
+    runs. Under PyInstaller sys.executable is MarketForge.exe - the dispatch
+    shim at the top of shell.py recognizes the script path and emulates
+    `python run_bot.py` instead of relaunching the app (which would loop).
+    """
     import atexit
     _kill_stale_engine()
+    env_file = ROOT / "bot" / ".env"
+    eng_log = None
     backoff = 3
-    while True:
+    while not ENGINE_STOP.is_set():
+        if not env_file.exists():
+            # First run: setup has not written keys yet. Park instead of
+            # crash-looping run_bot.py's missing-env exit every few seconds.
+            print("[embedded bot] bot/.env missing - engine parked until setup writes it")
+            while not env_file.exists():
+                if ENGINE_STOP.is_set():
+                    return
+                time.sleep(2)
+            print("[embedded bot] bot/.env appeared - starting the engine")
+        if FROZEN:
+            # No console in a windowed build: give the engine a real stdout
+            # (its prints + Flask's per-request log land here) and a real
+            # stdin, or subprocess handle inheritance inside it gets WinError
+            # 6. (Re)opened PER SPAWN so the >5MB rotation actually happens on
+            # a desk left running for days, not only at launch.
+            try:
+                eng_log and eng_log.close()
+            except Exception:
+                pass
+            logs = ROOT / "logs"
+            logs.mkdir(exist_ok=True)
+            lp = logs / "engine.log"
+            mode = "w" if (lp.exists() and lp.stat().st_size > 5_000_000) else "a"
+            eng_log = open(lp, mode, buffering=1, encoding="utf-8", errors="replace")
+        kw = dict(stdin=subprocess.DEVNULL, stdout=eng_log,
+                  stderr=subprocess.STDOUT) if eng_log else {}
         proc = subprocess.Popen([sys.executable, str(ROOT / "bot" / "run_bot.py")],
-                                cwd=str(ROOT / "bot"))
+                                cwd=str(ROOT / "bot"),
+                                # one knob moves engine + proxy together; a real
+                                # env var beats bot/.env inside config.py
+                                env={**os.environ, "API_PORT": str(BOT_PORT)},
+                                **kw)
         try:
             BOT_PID.parent.mkdir(parents=True, exist_ok=True)
             BOT_PID.write_text(str(proc.pid), encoding="utf-8")
         except Exception:
             pass
         atexit.register(lambda p=proc: p.poll() is None and _kill_proc(p))
+        t0 = time.time()
         rc = proc.wait()
+        if ENGINE_STOP.is_set():
+            return               # shutdown killed it on purpose - stay down
+        if ENGINE_KICK.is_set() or time.time() - t0 > 30:
+            backoff = 3          # deliberate restart or a long healthy run
+            ENGINE_KICK.clear()
         print(f"[embedded bot] exited rc={rc}; restarting in {backoff}s "
               f"(check bot/.env if this loops)")
         time.sleep(backoff)
@@ -217,7 +352,8 @@ def _kill_proc(p):
     try:
         if os.name == "nt":
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)],
-                           capture_output=True, timeout=10)
+                           capture_output=True, timeout=10,
+                           stdin=subprocess.DEVNULL, **NOWIN)
         else:
             import signal
             os.killpg(os.getpgid(p.pid), signal.SIGKILL)
@@ -308,7 +444,8 @@ def _bridge_turn(new_texts):
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, text=True, cwd=str(ROOT),
                             encoding="utf-8", errors="replace",
-                            start_new_session=(os.name != "nt"))  # own group -> killpg gets the tree
+                            start_new_session=(os.name != "nt"),  # own group -> killpg gets the tree
+                            **NOWIN)
     _bridge_current["proc"] = proc
     killer = threading.Timer(BRIDGE_TIMEOUT, _kill_proc, args=(proc,))
     killer.start()
@@ -459,13 +596,15 @@ def _vb_pick_profile(want=None):
 
       1. an explicit profile id/name passed per request
       2. config.json `voicebox_profile` (id, or a case-insensitive name match)
-      3. the first CLONED voice
-      4. anything at all
+      3. a KOKORO preset, then any preset, then a clone, then anything
 
-    Cloned voices beat presets on purpose: sounding like *you* is the entire
-    reason to run Voicebox instead of the browser's built-in speech. The old
-    behaviour filtered to engine == "kokoro", which silently excluded every
-    clone and always landed on a stock preset voice."""
+    UNCONFIGURED defaults prefer presets now (flipped 2026-08-06): the first
+    exe run auto-picked a cloned voice, whose cloning engine ground the GPU for
+    minutes and wedged Voicebox's whole HTTP loop - the desk went silent with
+    no error. Presets (kokoro) answer in a couple of seconds, every install
+    that has Voicebox has them, and anyone who wants their clone says so with
+    one config.json line - sounding like *you* is still the point, it just
+    has to be a choice, not a trap."""
     want = str(want or _cfg.get("voicebox_profile") or "").strip()
     if _vb_profile["id"] and not want:
         return _vb_profile["id"]
@@ -478,7 +617,9 @@ def _vb_pick_profile(want=None):
         pick = next((p for p in profs if p["id"] == want), None) \
             or next((p for p in profs if want.lower() in p["name"].lower()), None)
     if not pick:
-        pick = next((p for p in profs if p["is_clone"]), None) or profs[0]
+        pick = next((p for p in profs if p["engine"] == "kokoro"), None) \
+            or next((p for p in profs if not p["is_clone"]), None) \
+            or profs[0]
     # A one-off voice (say, a narrator) must not become the app's default, or the
     # dashboard quietly adopts it for every reply after the first.
     if not explicit:
@@ -617,7 +758,18 @@ class Handler(BaseHTTPRequestHandler):
         path, qs = parsed.path, parsed.query
 
         if path in ("/", "/index.html"):
+            # First run (no usable keys in bot/.env): the desk would just be
+            # empty panels and proxy errors, so serve the setup wizard instead.
+            # Checked server-side on every load - the frontend never guesses.
+            try:
+                if setup_core.first_run_state()["first_run"]:
+                    return self._file(STATIC / "setup.html", "text/html; charset=utf-8")
+            except Exception:
+                pass
             return self._file(STATIC / "index.html", "text/html; charset=utf-8")
+        if path == "/setup":
+            # re-runnable any time, prefilled with current values
+            return self._file(STATIC / "setup.html", "text/html; charset=utf-8")
         if path.startswith("/static/"):
             f = (STATIC / path[len("/static/"):]).resolve()
             if not str(f).startswith(str(STATIC.resolve())):
@@ -714,7 +866,44 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/meta":
             return self._json({"bot_base": BOT, "port": PORT, "root": str(ROOT),
                                "voicebox": VOICEBOX, "user": str(_cfg.get("user", "Dustin")),
-                               "theme": str(_cfg.get("theme", "forge"))})
+                               "theme": str(_cfg.get("theme", "forge")),
+                               "app": "marketforge",   # single-instance probe checks this
+                               "shell": SHELL["shell"],
+                               "splash_ms": int(_cfg.get("splash_ms", 2500))})
+
+        if path == "/api/shell":
+            # Feature-detect, never shell-detect: the UI hides what is missing.
+            return self._json(SHELL)
+
+        if path == "/api/setup/state":
+            try:
+                st = setup_core.first_run_state()
+                st["root"] = str(ROOT)
+                return self._json(st)
+            except Exception as e:
+                return self._json({"error": str(e)[:160]}, 500)
+
+        if path == "/api/setup/probe-extras":
+            # Live green/grey dots for the wizard's optional-extras step.
+            # Short timeouts: a wizard step must not hang on a dead socket.
+            def _up(url, t=2.0):
+                try:
+                    with urllib.request.urlopen(url, timeout=t) as r:
+                        return r.status == 200
+                except Exception:
+                    return False
+            return self._json({
+                "voicebox": _up(f"{VOICEBOX}/health"),
+                "claude": bool(_resolve_claude()),
+            })
+
+        if path == "/api/stt/health":
+            # STT rides Voicebox /transcribe; reachable Voicebox = STT on.
+            try:
+                with urllib.request.urlopen(f"{VOICEBOX}/health", timeout=2.5) as r:
+                    return self._json({"ok": r.status == 200})
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:100]})
 
         if path == "/api/admin":
             # READ-ONLY inventory: what is running, on which model, from which files.
@@ -899,11 +1088,52 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"error": "not found"}, 404)
 
     # ---- POST ----
+    def _stt(self, audio: bytes, parsed):
+        """Speech-to-text relay: raw audio in, text out, via Voicebox
+        POST /transcribe (multipart). Exists because WebView2 has no Web Speech
+        API - MediaRecorder + this endpoint work identically in every shell."""
+        if not audio:
+            return self._json({"error": "empty audio"}, 400)
+        q = urllib.parse.parse_qs(parsed.query)
+        lang = (q.get("lang", ["en"])[0] or "en")[:8]
+        model = str(_cfg.get("stt_model") or "")   # blank = Voicebox's default
+        ctype = self.headers.get("Content-Type") or "application/octet-stream"
+        ext = {"audio/webm": "webm", "audio/ogg": "ogg", "audio/wav": "wav",
+               "audio/mp4": "mp4", "audio/mpeg": "mp3"}.get(ctype.split(";")[0].strip(), "webm")
+        bnd = uuid.uuid4().hex
+        parts = [(f'--{bnd}\r\nContent-Disposition: form-data; name="file"; '
+                  f'filename="mic.{ext}"\r\nContent-Type: {ctype}\r\n\r\n').encode()
+                 + audio + b"\r\n"]
+        for name, val in (("language", lang), ("model", model)):
+            if val:
+                parts.append((f'--{bnd}\r\nContent-Disposition: form-data; '
+                              f'name="{name}"\r\n\r\n{val}\r\n').encode())
+        parts.append(f"--{bnd}--\r\n".encode())
+        try:
+            req = urllib.request.Request(
+                f"{VOICEBOX}/transcribe", data=b"".join(parts), method="POST",
+                headers={"Content-Type": f"multipart/form-data; boundary={bnd}"})
+            with urllib.request.urlopen(req, timeout=90) as r:
+                out = json.loads(r.read())
+            return self._json({"ok": True, "text": str(out.get("text") or "").strip(),
+                               "duration": out.get("duration")})
+        except Exception as e:
+            return self._json({"ok": False,
+                               "error": f"transcribe failed: {str(e)[:140]}"}, 502)
+
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 25_000_000:
+            return self._json({"error": "body too large"}, 413)
+        raw_body = self.rfile.read(length) if length else b""
+
+        # /api/stt carries RAW AUDIO, not JSON - branch before the parse
+        if parsed.path == "/api/stt":
+            return self._stt(raw_body, parsed)
+
         try:
-            length = int(self.headers.get("Content-Length") or 0)
-            body = json.loads(self.rfile.read(length) or b"{}")
+            body = json.loads(raw_body or b"{}")
         except Exception:
             return self._json({"error": "bad json"}, 400)
 
@@ -917,6 +1147,124 @@ class Handler(BaseHTTPRequestHandler):
                     f.write(json.dumps(entry) + "\n")
             _journal_log("chat", text[:160])
             return self._json({"ok": True})
+
+        if parsed.path == "/api/shell/open":
+            # External links open in the SYSTEM browser. Inside a webview an
+            # unhandled target=_blank either does nothing or traps the user in
+            # a chromeless window with no back button; in a plain browser the
+            # frontend never calls this (it uses window.open as normal).
+            url = str(body.get("url") or "").strip()
+            if not url.lower().startswith(("http://", "https://")):
+                return self._json({"error": "http(s) urls only"}, 400)
+            try:
+                webbrowser.open(url)
+                return self._json({"ok": True})
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:120]}, 500)
+
+        if parsed.path == "/api/shell/quit":
+            # Close the shell window cleanly (the tray-less "Quit"). Runs the
+            # same path as clicking X: webview loop ends, server stops, the
+            # engine tree is killed. No-op in a plain browser.
+            hook = SHELL_HOOKS.get("quit")
+            if not hook:
+                return self._json({"ok": False, "hint": "no shell to quit"})
+            threading.Timer(0.3, hook).start()   # let this response flush first
+            return self._json({"ok": True})
+
+        if parsed.path == "/api/shell/focus":
+            # Single-instance flow: a second launch asks the FIRST process to
+            # bring its window forward, then exits. No-op in a plain browser.
+            hook = SHELL_HOOKS.get("focus")
+            if not hook:
+                return self._json({"ok": False, "hint": "no shell window to focus"})
+            try:
+                hook()
+                return self._json({"ok": True})
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:120]}, 500)
+
+        if parsed.path == "/api/setup/validate-keys":
+            # Wizard step 2: validate against /v2/account BEFORE letting the
+            # user continue, and detect the data feed in the same round trip.
+            # Wrong-keys-typed-in is the most likely failure and it must not
+            # surface 20 minutes later as an empty dashboard.
+            envn = str(body.get("env") or "paper").lower()
+            key, sec = _setup_key_pair(envn, body)
+            acct, err = setup_core.check_keys(envn, key, sec)
+            if not acct:
+                return self._json({"ok": False, "error": err})
+            feed = setup_core.detect_feed(key, sec)
+            return self._json({"ok": True, "feed": feed,
+                               "account": {"status": acct.get("status"),
+                                           "equity": acct.get("equity"),
+                                           "currency": acct.get("currency")}})
+
+        if parsed.path == "/api/setup/save":
+            envn = str(body.get("env") or "paper").lower()
+            key, sec = _setup_key_pair(envn, body)
+            mode = str(body.get("mode") or "research").lower()
+            if envn not in ("paper", "live") or mode not in ("research", "manual", "auto"):
+                return self._json({"ok": False, "error": "bad env or mode"}, 400)
+            # THE EXIT-GUARANTEE GUARD. Saving kills the engine to apply the
+            # new env - but a kill landing inside the order path's fill-poll
+            # window (up to ~18s after a BUY submits, before the disk-backed
+            # protect row exists) would leave a filled entry with NO exit and
+            # no record of the intended trail. That is the VRM failure class.
+            # So: if the broker shows a working BUY, refuse and let the user
+            # retry after the fill instead of killing at an arbitrary instant.
+            if EMBEDDED and BOT_PID.exists():
+                try:
+                    pid = int(BOT_PID.read_text().strip() or 0)
+                except Exception:
+                    pid = 0
+                if pid and _pid_alive(pid):
+                    try:
+                        raw, code = _bot_get("broker/orders?status=open", timeout=8)
+                        orders = json.loads(raw) if code == 200 else []
+                        buys = [o for o in orders if isinstance(o, dict)
+                                and str(o.get("side", "")).lower() == "buy"] \
+                            if isinstance(orders, list) else []
+                        if buys:
+                            return self._json({"ok": False, "error":
+                                f"engine is mid-order ({buys[0].get('symbol', '?')} buy "
+                                "still working at the broker) - wait for the fill, "
+                                "then save again"}, 409)
+                    except Exception:
+                        pass   # engine unreachable = no in-flight poll to race
+            # Never write junk: re-validate server-side even if the UI already
+            # did. One extra account call is cheap; a broken .env is not.
+            acct, err = setup_core.check_keys(envn, key, sec)
+            if not acct:
+                return self._json({"ok": False, "error": err})
+            feed = body.get("feed") or setup_core.detect_feed(key, sec)
+            cur = setup_core.read_env()
+            setup_core.apply_answers(
+                cur, env_name=envn, key=key, sec=sec, feed=feed, mode=mode,
+                webhook=str(body.get("webhook") or "").strip())
+            setup_core.write_env(cur)
+            _journal_log("note", f"setup saved ({envn}/{mode}, feed {feed or 'iex'})")
+            # Apply: if the engine is up it is running the OLD env - kill it
+            # and let the supervisor respawn with the new one. If it never
+            # started (first run), the supervisor's wait-for-.env loop starts
+            # it within seconds.
+            restarted = False
+            if EMBEDDED:
+                ENGINE_KICK.set()
+                try:
+                    pid = int(BOT_PID.read_text().strip() or 0) if BOT_PID.exists() else 0
+                    if pid and _pid_alive(pid):
+                        if os.name == "nt":
+                            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                                           capture_output=True, timeout=10,
+                                           stdin=subprocess.DEVNULL, **NOWIN)
+                        else:
+                            os.kill(pid, 9)
+                        restarted = True
+                except Exception:
+                    pass
+            return self._json({"ok": True, "feed": feed, "mode": mode,
+                               "env": envn, "engine_restarted": restarted})
 
         if parsed.path == "/api/memory":
             txt = str(body.get("text") or "")[:8000]
@@ -1087,7 +1435,10 @@ class Handler(BaseHTTPRequestHandler):
                                                  data=json.dumps(p).encode(), method="POST",
                                                  headers={"Content-Type": "application/json"})
                     try:
-                        with urllib.request.urlopen(req, timeout=120) as r:
+                        # 45s, not 120: a preset answers in ~2s, and three
+                        # 120s shape attempts back to back once held a reply
+                        # hostage for six minutes while the UI sat mute
+                        with urllib.request.urlopen(req, timeout=45) as r:
                             audio = r.read()
                             ctype = r.headers.get("Content-Type", "audio/wav")
                         if "json" in ctype:
@@ -1179,7 +1530,10 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"error": "not found"}, 404)
 
 
-def main():
+def build_server():
+    """Everything main() did short of serve_forever(): dirs, the bind, the
+    worker threads. Split out so shell.py can run the server on a thread and
+    keep the GUI loop for itself. Raises SystemExit(2) on a busy port."""
     PANELS.mkdir(exist_ok=True)
     SHOTS.mkdir(exist_ok=True)
     SAVED.mkdir(exist_ok=True)
@@ -1215,6 +1569,11 @@ def main():
         print(f"  bridge:  LIVE - new chat lines auto-run `claude -p` ({BRIDGE_MODEL}); replies are spoken")
     else:
         print("  bridge:  off (config.json bridge=false) - tell your CC window to check chat")
+    return srv
+
+
+def main():
+    srv = build_server()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

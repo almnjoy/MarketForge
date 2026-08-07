@@ -86,10 +86,33 @@ an image-capable agent can read.
 |---|---|
 | `POST /api/tts` | `{text, profile_id?}` returns WAV |
 | `GET /api/tts/health` · `GET /api/tts/profiles` | which voice, and all of them |
+| `POST /api/stt` | raw audio body (the frontend sends PCM WAV) -> `{ok, text, duration}` via Voicebox `/transcribe`. `?lang=en` |
+| `GET /api/stt/health` | is voice INPUT available (Voicebox reachable) |
 
 **Presets require an `engine` field; cloned voices reject one.** The relay
 negotiates per profile and caches which shape worked. Set the default with
-`voicebox_profile` in `config.json`.
+`voicebox_profile` in `config.json` - unconfigured, the picker prefers a fast
+kokoro preset (a clone's engine can grind the GPU for minutes, which is how
+the desk once went silently mute).
+
+**Send WAV to `/api/stt`, not webm.** Voicebox 500s on containers it cannot
+decode; the frontend taps raw PCM and encodes WAV in the page for exactly
+this reason.
+
+## Setup and shell (added with the desktop build)
+
+| | |
+|---|---|
+| `GET /api/setup/state` | first-run truth, server-side: has keys, env, mode, per-env stored-pair flags |
+| `POST /api/setup/validate-keys` | `{env, key_id, secret}` -> live Alpaca check + feed detection in one round trip. Empty pair = validate the STORED pair |
+| `GET /api/setup/probe-extras` | green/grey dots: voicebox, claude on PATH |
+| `POST /api/setup/save` | write `bot/.env` + restart the engine. REFUSES (409) while a buy is working at the broker - see the exit guarantee |
+| `GET /api/shell` | `{shell: "browser"\|"pywebview", can_focus}` - feature-detect, never shell-detect |
+| `POST /api/shell/open` | `{url}` opens in the SYSTEM browser (no-op-ish in a plain browser; the page uses window.open there) |
+| `POST /api/shell/focus` · `POST /api/shell/quit` | single-instance handoff / the tray-less Quit. Both no-op without a shell |
+
+`GET /` serves the setup wizard instead of the desk while `bot/.env` holds no
+usable keys; `/setup` re-runs it any time, prefilled, keys keepable.
 
 ## Meta
 

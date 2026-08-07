@@ -20,7 +20,7 @@ Repo: https://github.com/almnjoy/MarketForge
 2. Clone the repo to my home directory:
    git clone https://github.com/almnjoy/MarketForge  (~/MarketForge, or
    %USERPROFILE%\MarketForge on Windows)
-3. Install the one dependency:  python -m pip install -r requirements.txt
+3. Install the dependencies:  python -m pip install -r requirements.txt
 4. Run the guided setup WITH me - do not fill it in on your own:
        python setup.py
    It asks for my Alpaca keys, validates them against the API, auto-detects
@@ -30,8 +30,8 @@ Repo: https://github.com/almnjoy/MarketForge
        Paper dashboard -> API keys; the secret is shown once).
      - Mode: "Research only" is the safe default. Only choose an automatic mode
        if I explicitly ask for it.
-     - Scoring: optional. If I want it, offer to install Ollama and pull
-       qwen2.5:3b, then point setup at http://127.0.0.1:11434/v1.
+   (Catalyst scoring is automatic: it rides YOU, the coding agent, when you
+   are installed on this machine. Nothing to configure.)
 5. Launch it: run-portable.bat on Windows, or MF_EMBEDDED=1 python app.py
    elsewhere. Confirm http://localhost:8410 loads and the header shows my mode
    and data feed.
