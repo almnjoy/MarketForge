@@ -121,7 +121,15 @@ def _browser_fallback(srv, err):
     import webbrowser
     import app as desk        # main() binds this locally
     url = f"http://127.0.0.1:{desk.PORT}"
-    desk.SHELL.update({"shell": "browser", "can_focus": False})
+
+    # THE EXE IS WINDOWLESS (MarketForge.spec: console=False). With no window and
+    # no console, closing the browser tab stops NOTHING - the desk keeps running
+    # headless with the engine alive and broker keys loaded, and Task Manager is
+    # the only way out. So the fallback has to provide its own Quit, and the UI
+    # has to show it. can_quit drives that button.
+    stop = threading.Event()
+    desk.SHELL.update({"shell": "browser", "can_focus": False, "can_quit": True})
+    desk.SHELL_HOOKS["quit"] = stop.set
     print("\n  " + "=" * 66)
     print("  The app window could not open, so Market Forge is running in your")
     print("  BROWSER instead. Nothing is missing except the native frame.")
@@ -129,20 +137,24 @@ def _browser_fallback(srv, err):
     print(f"  Reason: {err.__class__.__name__}: {str(err)[:160]}")
     print("  (usually pywebview/.NET. Running from a network or removable")
     print("   drive is a common cause - try a local folder like C:\\MarketForge)")
-    print("  Close this window to stop the desk.")
+    print("  TO STOP IT: use Quit in the app (top right). Closing the browser tab")
+    print("  does NOT stop the desk - there is no window to close.")
     print("  " + "=" * 66 + "\n")
     try:
         webbrowser.open(url)
     except Exception:
         pass
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
-        srv.serve_forever()          # block here instead of exiting
+        stop.wait()                  # blocks until /api/shell/quit fires
     except KeyboardInterrupt:
         pass
-    try:
-        desk.stop_engine()
-    except Exception:
-        pass
+    print("[shell] quit requested - shutting down")
+    for fn in (srv.shutdown, desk.stop_engine):
+        try:
+            fn()
+        except Exception:
+            pass
     sys.exit(0)
 
 

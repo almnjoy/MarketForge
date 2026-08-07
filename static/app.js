@@ -74,7 +74,32 @@ function hookLinks(doc) {
   }, true);
 }
 hookLinks(document);
-(async () => { try { shellInfo = await J('/api/shell'); } catch {} })();
+(async () => {
+  try { shellInfo = await J('/api/shell'); } catch {}
+  // The packaged exe is windowless. In the browser lane there is no window and
+  // no console to close, so without this button the only way to stop the desk
+  // is Task Manager - while it still holds broker keys and a live engine.
+  if (shellInfo.can_quit) {
+    const b = $('#quitBtn');
+    if (b) {
+      b.classList.remove('hidden');
+      b.onclick = async () => {
+        if (!confirm('Stop Market Forge?\n\nThis shuts down the desk and the trading engine. '
+          + 'Stops already armed at your broker keep working.')) return;
+        const r = await fetch('/api/shell/quit', { method: 'POST' });
+        const j = await r.json().catch(() => ({}));
+        if (r.status === 409) {
+          // The shutdown guard: an entry is working and would land unprotected.
+          alert('Not stopping yet:\n\n' + (j.reasons || []).join('\n')
+            + '\n\nLeave it running until the fill is protected.');
+          return;
+        }
+        document.body.innerHTML = '<div style="padding:60px;font:16px system-ui;color:#9aa8bb">'
+          + 'Market Forge stopped. You can close this tab.</div>';
+      };
+    }
+  }
+})();
 
 /* ---------- splash ----------
    Mounted synchronously so there is no flash of desk first; every fetch below
@@ -1176,6 +1201,26 @@ $('#stopBtn').onclick = window.stopAll;
 
 let speakingNow = false;  // echo guard: hot mic ignores itself while the copilot talks
 let noVoiceWarned = false;
+let audioUnlocked = false, audioUnlockArmed = false;
+function armAudioUnlock() {
+  if (audioUnlocked || audioUnlockArmed) return;
+  audioUnlockArmed = true;
+  const unlock = () => {
+    audioUnlockArmed = false;
+    audioUnlocked = true;
+    // Playing a silent buffer inside the gesture is what actually satisfies the
+    // policy; after this, later .play() calls are allowed for the session.
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (Ctx) { const c = new Ctx(); c.resume?.(); const s = c.createBufferSource();
+        s.buffer = c.createBuffer(1, 1, 22050); s.connect(c.destination); s.start(0); }
+    } catch {}
+    notify('voice: sound enabled', 'ok');
+    for (const ev of ['pointerdown', 'keydown']) document.removeEventListener(ev, unlock, true);
+  };
+  for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, unlock, true);
+}
+
 async function speakText(text) {
   if (!text) return;
   if (vbOk) {
@@ -1195,6 +1240,17 @@ async function speakText(text) {
         // unhandled, that was a desk that just silently never spoke
         audioEl.play().catch((e) => {
           speakingNow = false;
+          if (e && e.name === 'NotAllowedError') {
+            // Browser autoplay policy: audio cannot start until the page has
+            // had a real user gesture. A hard refresh resets that, which is
+            // exactly when this fires. The pywebview shell passes
+            // --autoplay-policy=no-user-gesture-required; a plain browser
+            // cannot, so unlock on the next click/key instead of just
+            // complaining once and staying mute forever.
+            armAudioUnlock();
+            notify('voice: click anywhere once to enable sound (browser rule)', 'warn');
+            return;
+          }
           notify(`voice: playback blocked (${e.name || e.message})`, 'warn');
         });
         return;

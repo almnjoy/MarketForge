@@ -410,6 +410,9 @@ body.has-reader { overflow: hidden; }
 .btn.stop { border-color: rgba(239,68,68,.55); color: var(--loss); }
 .btn.stop:hover { background: rgba(239,68,68,.15); color: var(--loss2); border-color: var(--loss2); transform: none; }
 .btn.stop.hidden { display: none; }
+/* generic: any element can opt out. Only .naked and .btn.stop had one, so
+   a `hidden` class on anything else did nothing at all. */
+.hidden { display: none !important; }
 .turn.typing .stopmini { margin-left: 10px; cursor: pointer; color: var(--loss); font-style: normal; }
 .turn.typing .stopmini:hover { color: var(--loss2); }
 .chip.mkt { font-family: var(--serif); font-weight: 600; }
