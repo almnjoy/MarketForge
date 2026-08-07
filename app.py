@@ -596,13 +596,15 @@ def _vb_pick_profile(want=None):
 
       1. an explicit profile id/name passed per request
       2. config.json `voicebox_profile` (id, or a case-insensitive name match)
-      3. the first CLONED voice
-      4. anything at all
+      3. a KOKORO preset, then any preset, then a clone, then anything
 
-    Cloned voices beat presets on purpose: sounding like *you* is the entire
-    reason to run Voicebox instead of the browser's built-in speech. The old
-    behaviour filtered to engine == "kokoro", which silently excluded every
-    clone and always landed on a stock preset voice."""
+    UNCONFIGURED defaults prefer presets now (flipped 2026-08-06): the first
+    exe run auto-picked a cloned voice, whose cloning engine ground the GPU for
+    minutes and wedged Voicebox's whole HTTP loop - the desk went silent with
+    no error. Presets (kokoro) answer in a couple of seconds, every install
+    that has Voicebox has them, and anyone who wants their clone says so with
+    one config.json line - sounding like *you* is still the point, it just
+    has to be a choice, not a trap."""
     want = str(want or _cfg.get("voicebox_profile") or "").strip()
     if _vb_profile["id"] and not want:
         return _vb_profile["id"]
@@ -615,7 +617,9 @@ def _vb_pick_profile(want=None):
         pick = next((p for p in profs if p["id"] == want), None) \
             or next((p for p in profs if want.lower() in p["name"].lower()), None)
     if not pick:
-        pick = next((p for p in profs if p["is_clone"]), None) or profs[0]
+        pick = next((p for p in profs if p["engine"] == "kokoro"), None) \
+            or next((p for p in profs if not p["is_clone"]), None) \
+            or profs[0]
     # A one-off voice (say, a narrator) must not become the app's default, or the
     # dashboard quietly adopts it for every reply after the first.
     if not explicit:
@@ -1431,7 +1435,10 @@ class Handler(BaseHTTPRequestHandler):
                                                  data=json.dumps(p).encode(), method="POST",
                                                  headers={"Content-Type": "application/json"})
                     try:
-                        with urllib.request.urlopen(req, timeout=120) as r:
+                        # 45s, not 120: a preset answers in ~2s, and three
+                        # 120s shape attempts back to back once held a reply
+                        # hostage for six minutes while the UI sat mute
+                        with urllib.request.urlopen(req, timeout=45) as r:
                             audio = r.read()
                             ctype = r.headers.get("Content-Type", "audio/wav")
                         if "json" in ctype:

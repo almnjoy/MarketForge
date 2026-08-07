@@ -939,7 +939,11 @@ async function speakText(text) {
   if (!text) return;
   if (vbOk) {
     try {
-      const r = await fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: text.slice(0, 900) }) });
+      // Hard client-side cap: a wedged Voicebox once held this fetch open for
+      // minutes and the desk just looked mute. Better a visible fallback.
+      const r = await fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text.slice(0, 900) }),
+        signal: AbortSignal.timeout ? AbortSignal.timeout(60000) : undefined });
       if (r.ok && (r.headers.get('Content-Type') || '').includes('audio')) {
         const blob = await r.blob();
         audioEl?.pause();
