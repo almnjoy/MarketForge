@@ -4,10 +4,12 @@
 # binary needs a Windows runner - that is the whole reason this exists rather
 # than building on the dev machine.
 #
-# NOTE: the actual PyInstaller spec is produced by the packaging work on the
-# `packaging` branch. Until that lands this workflow is inert (it only fires on
-# a tag). Do not tag until `MarketForge.spec` exists and a frozen build has been
-# tested on a clean machine - see RELEASING.md.
+# THIS CALLS build.py. It used to run `pyinstaller MarketForge.spec` directly,
+# which fails: the spec points at build/MarketForge.ico, an icon that build.py
+# GENERATES (and build/ is gitignored, so it is never in a checkout). Running
+# the packager by hand also skipped copy_siblings() and verify(), so even a
+# "successful" build would have shipped an exe with no static/, no bot/, and no
+# secrets check. One build path, used by CI and by a human, or they drift.
 name: release
 
 on:
@@ -32,7 +34,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller pywebview
+          # pyinstaller: the packager. pywebview: imported by shell.py, so the
+          # frozen build needs it present at analysis time. pillow: build.py's
+          # make_icon() renders the .ico from the PNG mark.
+          pip install pyinstaller pywebview pillow
 
       - name: Refuse to build if secrets would ship
         shell: bash
@@ -45,29 +50,50 @@ jobs:
           fi
           grep -q "STOCK_ENV=paper" bot/.env.template || {
             echo "::error::.env.template must ship paper-first"; exit 1; }
+          # RULES.md is the developer's own trading plan and is gitignored. If it
+          # ever reappears as a tracked file, the build would hand every user one
+          # person's strategy as though it were the app's.
+          if git ls-files --error-unmatch RULES.md >/dev/null 2>&1; then
+            echo "::error::RULES.md is tracked - it must stay user data (ship RULES.template.md)"
+            exit 1
+          fi
           echo "pre-flight OK"
 
       - name: Build
-        run: pyinstaller MarketForge.spec --noconfirm
+        # Produces dist/MarketForge/ AND dist/MarketForge-win64.zip, and runs
+        # its own verify() which refuses to ship if any personal state landed in
+        # the dist. That check is stricter than anything worth restating here.
+        run: python build.py
 
-      - name: Package
+      - name: Contents sanity
         shell: bash
         run: |
-          cd dist
-          # one-folder build: zip the folder, not a loose exe
-          7z a -tzip "../MarketForge-win64.zip" MarketForge/
-          cd ..
-          echo "--- contents sanity ---"
-          7z l MarketForge-win64.zip | grep -iE "\.env$" && {
-            echo "::error::an .env got into the zip"; exit 1; } || echo "no .env in zip"
+          test -f dist/MarketForge-win64.zip || {
+            echo "::error::build.py did not produce the zip"; exit 1; }
+          echo "--- looking for anything that must never ship ---"
+          if 7z l dist/MarketForge-win64.zip | grep -iE "(/|\\\\)\.env$|trades-(live|paper)\.db|/RULES\.md$"; then
+            echo "::error::personal state or keys got into the zip"
+            exit 1
+          fi
+          echo "clean"
+          ls -la dist/MarketForge-win64.zip
 
       - uses: softprops/action-gh-release@v2
+        # ONLY on a tag. Without this a workflow_dispatch run would try to cut a
+        # release against refs/heads/main, so the "dry-run" above was not one.
+        # With it, dispatch builds and verifies and stops - which is exactly what
+        # you want before spending a version number.
+        if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: MarketForge-win64.zip
+          files: dist/MarketForge-win64.zip
           draft: true          # you review it before anyone can download
           generate_release_notes: true
           body: |
             **Windows app.** Unzip, run `MarketForge.exe`. No Python needed.
+
+            Your keys, trading plan, ledger and boards live in
+            `%USERPROFILE%\MarketForge`, outside the app folder - so updating is
+            "delete the old folder, unzip this one" and nothing of yours moves.
 
             Ships in **paper mode** with auto-trading off. Free Alpaca paper keys
             at alpaca.markets. Prefer to run from source, or on macOS/Linux? See
