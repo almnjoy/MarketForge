@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -79,6 +80,16 @@ def _workspace() -> Path:
 
 WORK = _workspace()
 BOT_HOME = WORK / "bot"          # the user's .env + data/, NOT the engine's code
+
+# setup_core is imported ABOVE this line, so it already resolved its own paths
+# from an MF_BOT_HOME that only ever gets set on the ENGINE subprocess. Left
+# alone, the wizard writes keys to <program>/bot/.env while the engine reads
+# <workspace>/bot/.env: setup reports success, and the engine stays parked
+# forever with "bot/.env missing". Point them at the SAME file, and export the
+# variable so this process and every child agree.
+os.environ["MF_BOT_HOME"] = str(BOT_HOME)
+setup_core.BOT_HOME = BOT_HOME
+setup_core.ENV = BOT_HOME / ".env"
 
 
 def resource_path(rel: str) -> Path:
@@ -1094,10 +1105,31 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # ---- GET ----
+    # One endpoint raising must not take down the request thread. Before this,
+    # a ValueError in the Admin file list left the tab silently EMPTY with the
+    # traceback only in a log file nobody opens. A 500 with the reason in it is
+    # something you can actually see and report.
     def do_GET(self):
+        LAST_CLIENT[0] = time.time()
+        try:
+            return self._get()
+        except Exception as e:
+            traceback.print_exc()
+            return self._json({"error": f"{e.__class__.__name__}: {str(e)[:300]}",
+                               "where": self.path}, 500)
+
+    def do_POST(self):
+        LAST_CLIENT[0] = time.time()
+        try:
+            return self._post()
+        except Exception as e:
+            traceback.print_exc()
+            return self._json({"error": f"{e.__class__.__name__}: {str(e)[:300]}",
+                               "where": self.path}, 500)
+
+    def _get(self):
         parsed = urllib.parse.urlparse(self.path)
         path, qs = parsed.path, parsed.query
-        LAST_CLIENT[0] = time.time()
 
         if path in ("/", "/index.html"):
             # First run (no usable keys in bot/.env): the desk would just be
@@ -1106,8 +1138,12 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if setup_core.first_run_state()["first_run"]:
                     return self._file(STATIC / "setup.html", "text/html; charset=utf-8")
-            except Exception:
-                pass
+            except Exception as e:
+                # Do NOT swallow this silently. If the first-run check breaks,
+                # the app serves the desk to someone with no keys, which looks
+                # like "the engine is down" rather than "you have not set up".
+                print(f"[setup] first-run check failed ({e.__class__.__name__}: "
+                      f"{str(e)[:150]}) - serving the desk")
             return self._file(STATIC / "index.html", "text/html; charset=utf-8")
         if path == "/setup":
             # re-runnable any time, prefilled with current values
@@ -1296,13 +1332,26 @@ class Handler(BaseHTTPRequestHandler):
             # is in place" screen, not a control panel. Secrets are NEVER returned,
             # only whether a file exists and how big it is.
             def finfo(p, label, what):
+                # Show the path relative to whichever root it actually lives
+                # under. Since the workspace split, user files are under WORK and
+                # shipped files under ROOT, and WORK is NOT necessarily inside
+                # ROOT - unzip the app into ~/MarketForge and WORK is its PARENT.
+                # relative_to() then raises ValueError, which is not an OSError,
+                # so it escaped this handler and 500'd the whole Admin tab.
+                rel = p.name
+                for base in (WORK, ROOT):
+                    try:
+                        rel = str(p.relative_to(base))
+                        break
+                    except ValueError:
+                        continue
                 try:
                     st = p.stat()
-                    return {"label": label, "what": what, "path": str(p.relative_to(ROOT)),
+                    return {"label": label, "what": what, "path": rel,
                             "exists": True, "bytes": st.st_size,
                             "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))}
                 except OSError:
-                    return {"label": label, "what": what, "path": str(p.name),
+                    return {"label": label, "what": what, "path": rel,
                             "exists": False, "bytes": 0, "mtime": ""}
 
             bot_cfg = {}
@@ -1520,8 +1569,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False,
                                "error": f"transcribe failed: {str(e)[:140]}"}, 502)
 
-    def do_POST(self):
-        LAST_CLIENT[0] = time.time()
+    def _post(self):
         parsed = urllib.parse.urlparse(self.path)
         length = int(self.headers.get("Content-Length") or 0)
         if length > 25_000_000:
