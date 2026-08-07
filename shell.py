@@ -111,6 +111,41 @@ def _msgbox(text: str, title="Market Forge"):
             pass
 
 
+def _browser_fallback(srv, err):
+    """No window? Serve the desk in the default browser and keep running.
+
+    Everything works here - the desk was always browser-first, and /api/shell
+    already reports capabilities so the UI hides what a browser cannot do. The
+    only loss is the native frame.
+    """
+    import webbrowser
+    import app as desk        # main() binds this locally
+    url = f"http://127.0.0.1:{desk.PORT}"
+    desk.SHELL.update({"shell": "browser", "can_focus": False})
+    print("\n  " + "=" * 66)
+    print("  The app window could not open, so Market Forge is running in your")
+    print("  BROWSER instead. Nothing is missing except the native frame.")
+    print(f"\n      {url}\n")
+    print(f"  Reason: {err.__class__.__name__}: {str(err)[:160]}")
+    print("  (usually pywebview/.NET. Running from a network or removable")
+    print("   drive is a common cause - try a local folder like C:\\MarketForge)")
+    print("  Close this window to stop the desk.")
+    print("  " + "=" * 66 + "\n")
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+    try:
+        srv.serve_forever()          # block here instead of exiting
+    except KeyboardInterrupt:
+        pass
+    try:
+        desk.stop_engine()
+    except Exception:
+        pass
+    sys.exit(0)
+
+
 def main():
     os.environ.setdefault("MF_EMBEDDED", "1")   # the exe is the friend edition
     import app as desk
@@ -152,13 +187,26 @@ def main():
     if extra not in cur:
         os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = f"{cur} {extra}".strip()
 
-    import webview   # imported late: dispatch children must never pay for it
-
-    win = webview.create_window(
-        "Market Forge", f"http://127.0.0.1:{desk.PORT}",
-        width=1600, height=1000, min_size=(1100, 700),
-        background_color="#0a0d13",   # forge --bg: no white flash before paint
-        text_select=True)
+    # THE WINDOW IS OPTIONAL. THE DESK IS NOT.
+    #
+    # pywebview on Windows goes through winforms -> pythonnet -> a .NET assembly
+    # (Python.Runtime.dll), and that chain is fragile under PyInstaller: it can
+    # fail to resolve on a machine with a different .NET, from a network or
+    # removable drive, or under some security policies. When it broke, the whole
+    # app died on launch with a stack trace - even though the desk itself was
+    # already running and serving fine on :8410.
+    #
+    # A GUI wrapper must never be able to take the product down. If the window
+    # cannot open, fall back to the browser and say so.
+    try:
+        import webview   # imported late: dispatch children must never pay for it
+        win = webview.create_window(
+            "Market Forge", f"http://127.0.0.1:{desk.PORT}",
+            width=1600, height=1000, min_size=(1100, 700),
+            background_color="#0a0d13",   # forge --bg: no white flash before paint
+            text_select=True)
+    except Exception as e:
+        return _browser_fallback(srv, e)
 
     def _focus():
         for op in (win.restore, win.show):
@@ -177,8 +225,13 @@ def main():
 
     # private_mode=False + a storage dir: without it WebView2 runs incognito
     # and localStorage (theme pick, chart symbol, splash cache) dies per run.
-    webview.start(private_mode=False,
-                  storage_path=str(desk.ROOT / "webview-data"))
+    try:
+        webview.start(private_mode=False,
+                      storage_path=str(desk.WORK / "webview-data"))
+    except Exception as e:
+        # start() is where the .NET assembly actually loads, so this is the more
+        # likely of the two failure points, not create_window().
+        return _browser_fallback(srv, e)
 
     # window closed (X, or /api/shell/quit): stop serving, kill the engine
     # SYNCHRONOUSLY, then exit. atexit is not reliable on this path (proven in

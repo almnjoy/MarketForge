@@ -98,6 +98,14 @@ jobs:
 
             **Windows app.** Unzip, run `MarketForge.exe`. No Python needed.
 
+            Windows will show **"Windows protected your PC"** on first launch.
+            That is SmartScreen reacting to an unsigned app, not a virus warning
+            - click **More info** then **Run anyway**. Code signing costs money
+            and is on the list.
+
+            Unzip to a **local** folder (`C:\MarketForge`), not a network or USB
+            drive - the app window will not open from those.
+
             Your keys, trading plan, ledger and boards live in
             `%USERPROFILE%\MarketForge`, outside the app folder - so updating is
             "delete the old folder, unzip this one" and nothing of yours moves.
