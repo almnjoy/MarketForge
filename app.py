@@ -462,20 +462,56 @@ Newest message(s) from the operator:
 {new}"""
 
 
-def _resolve_claude():
-    override = os.environ.get("CLAUDE_BIN")
+# Which coding agents this desk can drive. The dialects differ in ways that are
+# not cosmetic: how the prompt is delivered, which flags exist, and what the
+# output stream looks like.
+#
+#   claude - prompt on stdin, stream-json events, so the UI shows REAL tool steps
+#   codex  - prompt as an argument (`codex exec` hangs on an open stdin), plain
+#            text out, so the turn works but without live step reporting
+#
+# AGENT_BIN pins the binary, AGENT_KIND pins the dialect. CLAUDE_BIN still works.
+AGENT_KINDS = {
+    "claude": {
+        "names": ("claude", "claude.cmd", "claude.exe"),
+        "probe": (lambda: [Path(os.environ.get("APPDATA", "x")) / "npm" / "claude.cmd",
+                           Path.home() / ".local" / "bin" / "claude.exe",
+                           Path.home() / ".local" / "bin" / "claude"]),
+        "stream": True,
+    },
+    "codex": {
+        "names": ("codex", "codex.cmd", "codex.exe"),
+        "probe": (lambda: [Path.home() / ".local" / "bin" / "codex.exe",
+                           Path.home() / ".local" / "bin" / "codex"]),
+        "stream": False,
+    },
+}
+
+
+def _resolve_agent():
+    """(binary, kind) for the copilot's CLI, or (None, None)."""
+    want = (os.environ.get("AGENT_KIND", "auto") or "auto").lower()
+    override = os.environ.get("AGENT_BIN") or os.environ.get("CLAUDE_BIN")
     if override:
-        return override
-    for name in ("claude", "claude.cmd", "claude.exe"):
-        f = shutil.which(name)
-        if f:
-            return f
-    for cand in (Path(os.environ.get("APPDATA", "x")) / "npm" / "claude.cmd",
-                 Path.home() / ".local" / "bin" / "claude.exe",
-                 Path.home() / ".local" / "bin" / "claude"):
-        if cand.exists():
-            return str(cand)
-    return None
+        if want in AGENT_KINDS:
+            return override, want
+        low = str(override).lower()
+        return override, next((k for k in AGENT_KINDS if k in low), "claude")
+    order = [want] if want in AGENT_KINDS else list(AGENT_KINDS)
+    for k in order:
+        for name in AGENT_KINDS[k]["names"]:
+            f = shutil.which(name)
+            if f:
+                return f, k
+        for cand in AGENT_KINDS[k]["probe"]():
+            if cand.exists():
+                return str(cand), k
+    return None, None
+
+
+def _resolve_claude():
+    """Back-compat: the binary only. Prefer _resolve_agent()."""
+    return _resolve_agent()[0]
 
 
 def _iter_lines(proc):
@@ -490,9 +526,11 @@ def _bridge_turn(new_texts):
     """One bridge turn over stream-json so the UI can show REAL steps (the
     actual tool calls: Read radar, Write panels/x.html) instead of a fake
     progress bar. Fallback to plain text if the stream never yields a result."""
-    bin_ = _resolve_claude()
+    bin_, kind = _resolve_agent()
     if not bin_:
-        return "Bridge error: claude CLI not found. Set CLAUDE_BIN and restart app.py."
+        return ("Bridge error: no coding-agent CLI found. Install Claude Code or "
+                "Codex and put it on PATH, or set AGENT_BIN to the full path, then "
+                "restart the desk.")
     hist = [*_read_jsonl(INBOX, 20), *_read_jsonl(OUTBOX, 20)]
     hist.sort(key=lambda m: str(m.get("ts", "")))
     hist_txt = "\n".join(f"{m.get('role')}: {str(m.get('text', ''))[:300]}" for m in hist[-14:])
@@ -504,13 +542,29 @@ def _bridge_turn(new_texts):
     prompt = BRIDGE_PROMPT.format(bot=BOT.split("//", 1)[-1], port=PORT,
                                   memory=mem or "(empty)",
                                   history=hist_txt or "(none)", new="\n".join(new_texts))
-    argv = [bin_, "-p", "--model", BRIDGE_MODEL, "--dangerously-skip-permissions",
-            "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-            "--no-session-persistence",
-            "--output-format", "stream-json", "--verbose"]  # verbose is REQUIRED for stream-json in -p mode
+    streaming = AGENT_KINDS.get(kind, {}).get("stream", False)
+    if kind == "codex":
+        # `codex exec` takes the prompt as an ARGUMENT and hangs forever on an
+        # open stdin, so the prompt cannot go the way claude's does. It also has
+        # no stream-json equivalent we parse, so this turn runs "quiet": you get
+        # the answer, just no live tool steps in the activity dock.
+        argv = [bin_, "exec", "--model", BRIDGE_MODEL,
+                "--skip-git-repo-check", prompt]
+        stdin_mode = subprocess.DEVNULL
+    else:
+        argv = [bin_, "-p", "--model", BRIDGE_MODEL, "--dangerously-skip-permissions",
+                "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+                "--no-session-persistence",
+                "--output-format", "stream-json", "--verbose"]  # verbose is REQUIRED for stream-json in -p mode
+        stdin_mode = subprocess.PIPE
+    if os.environ.get("AGENT_ARGS"):
+        # Escape hatch: a CLI's flags are not ours to guarantee, and being able
+        # to fix an argv without editing code is worth more than being clever.
+        argv = [bin_] + [a.replace("{model}", BRIDGE_MODEL).replace("{prompt}", prompt)
+                         for a in os.environ["AGENT_ARGS"].split()]
     if bin_.lower().endswith((".cmd", ".bat")):
         argv = ["cmd", "/c"] + argv          # .cmd shims cannot be exec'd directly
-    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    proc = subprocess.Popen(argv, stdin=stdin_mode, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, text=True, cwd=str(WORK),
                             encoding="utf-8", errors="replace",
                             start_new_session=(os.name != "nt"),  # own group -> killpg gets the tree
@@ -539,13 +593,19 @@ def _bridge_turn(new_texts):
 
     threading.Thread(target=_watchdog, daemon=True).start()
     try:
-        proc.stdin.write(prompt)
-        proc.stdin.close()
+        if proc.stdin is not None:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
         text_parts, result_text = [], None
         for line in _iter_lines(proc):
             last_event[0] = time.time()      # proof of life; resets the watchdog
             line = line.strip()
             if not line:
+                continue
+            if not streaming:
+                # Plain-text agent: every line IS the answer. No tool events to
+                # report, so the dock stays quiet rather than showing fake steps.
+                text_parts.append(line)
                 continue
             try:
                 ev = json.loads(line)
@@ -578,7 +638,8 @@ def _bridge_turn(new_texts):
         _bridge_current["proc"] = None
     if _bridge.pop("stopping", None):
         return "(stopped by you - say the word when you want me back on it)"
-    partial = (result_text or " ".join(text_parts) or "").strip()
+    sep = " " if streaming else "\n"
+    partial = (result_text or sep.join(text_parts) or "").strip()
     if killed["why"]:
         # Say what landed. A killed turn has usually already written its panels
         # and files, so reporting a bare error invites you to ask for the same
@@ -690,7 +751,8 @@ def _check_update():
 EDITABLE = {
     "RULES.md":    ("Your trading plan. The copilot treats it as binding.", "md"),
     "memory.md":   ("Standing orders injected into every copilot turn.", "md"),
-    "CLAUDE.md":   ("The copilot's brief and hard rules. Editing changes behaviour.", "md"),
+    "AGENTS.md":   ("The copilot's brief and hard rules. CANONICAL - edit this one.", "md"),
+    "CLAUDE.md":   ("Generated copy of AGENTS.md, for CLIs that look for this name.", "md"),
     "PROMPTS.md":  ("Prompts that reliably work. Notes to yourself.", "md"),
     "config.json": ("Ports, model, theme, voice. Must stay valid JSON.", "json"),
 }
@@ -1210,7 +1272,9 @@ class Handler(BaseHTTPRequestHandler):
                     return False
             return self._json({
                 "voicebox": _up(f"{VOICEBOX}/health"),
-                "claude": bool(_resolve_claude()),
+                "agent": bool(_resolve_agent()[0]),
+                "agent_kind": _resolve_agent()[1],
+                "claude": bool(_resolve_agent()[0]),   # legacy key, same answer
             })
 
         if path == "/api/stt/health":
@@ -1252,12 +1316,14 @@ class Handler(BaseHTTPRequestHandler):
                 kinds[e.get("kind", "?")] = kinds.get(e.get("kind", "?"), 0) + 1
 
             lanes = [{
-                "name": "Bridge (in-app copilot)", "runtime": "claude -p, headless",
+                "name": "Bridge (in-app copilot)",
+                "runtime": (lambda k: f"{k}, headless" if k else "no agent CLI found"
+                            )(_resolve_agent()[1]),
                 "model": BRIDGE_MODEL, "enabled": BRIDGE,
                 "status": _bridge.get("status"), "turns": _bridge.get("turns", 0),
                 "last_ms": _bridge.get("last_ms", 0), "timeout_s": BRIDGE_IDLE_TIMEOUT,
                 "idle_timeout_s": BRIDGE_IDLE_TIMEOUT, "max_s": BRIDGE_MAX_S,
-                "binary": _resolve_claude() or "not found on PATH",
+                "binary": _resolve_agent()[0] or "not found on PATH",
                 "note": "One short turn per chat message. Builds panels, answers, speaks.",
             }, {
                 "name": "Your terminal session", "runtime": "claude (interactive)",
@@ -1949,7 +2015,7 @@ def build_server():
         # whole point is that an update cannot touch what the user has edited.
         # CLAUDE.md has to be here rather than in the program folder, because the
         # copilot runs with the workspace as its cwd and auto-loads it from there.
-        for name in ("CLAUDE.md", "PROMPTS.md", "config.json"):
+        for name in ("AGENTS.md", "CLAUDE.md", "PROMPTS.md", "config.json"):
             src, dst = resource_path(name), WORK / name
             if src.exists() and not dst.exists():
                 dst.write_bytes(src.read_bytes())
@@ -1997,6 +2063,22 @@ def build_server():
     threading.Thread(target=_state_writer, daemon=True).start()
     print(f"  state:   {STATE.name}  (live snapshot on disk, every 20s - lanes "
           f"that cannot reach localhost read this)")
+    # Say plainly, on boot, whether an agent is present and WHAT breaks without
+    # one. Before this you found out by noticing the radar had quietly stopped
+    # producing scores, which is the worst possible way to learn it.
+    _abin, _akind = _resolve_agent()
+    if _abin:
+        print(f"  agent:   {_akind} -> {_abin}")
+    else:
+        print("\n  " + "=" * 66)
+        print("  NO CODING-AGENT CLI FOUND. The desk still runs. These do not:")
+        print("    - the COPILOT tab (chat, panel building, day replays)")
+        print("    - catalyst SCORES, so the radar alerts without triage")
+        print("    - AUTO-ENTRIES, which require a score and so cannot fire")
+        print("  Fix: install Claude Code or Codex and put it on PATH, or set")
+        print("  AGENT_BIN=<full path> in bot/.env. Then restart the desk.")
+        print("  Check with:  where claude    (PATH holds FOLDERS, not programs)")
+        print("  " + "=" * 66 + "\n")
     if BRIDGE:
         threading.Thread(target=_bridge_loop, daemon=True).start()
         print(f"  bridge:  LIVE - new chat lines auto-run `claude -p` ({BRIDGE_MODEL}); replies are spoken")

@@ -91,7 +91,12 @@ def copy_siblings():
     # run-tradingview.bat: tv.py is bundled in the exe (app.py imports it), so
     # /api/tv/* are live endpoints whose error hint says to run this file -
     # ship it or the hint points at nothing. No secrets in it.
-    for f in ("RULES.template.md", "CLAUDE.md", "run-tradingview.bat"):
+    # AGENTS.md is canonical; CLAUDE.md is a generated copy. Claude Code looks
+    # for CLAUDE.md, Codex looks for AGENTS.md, and the brief they read must be
+    # identical - it carries the "never place an order" rule.
+    _brief = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    (ROOT / "CLAUDE.md").write_text(_brief, encoding="utf-8", newline="\n")
+    for f in ("RULES.template.md", "AGENTS.md", "CLAUDE.md", "run-tradingview.bat"):
         shutil.copy2(ROOT / f, DIST / f)
         print(f"  + {f}")
     (DIST / "config.json").write_text(DEFAULT_CONFIG, encoding="utf-8")
@@ -104,7 +109,7 @@ def verify():
         raise SystemExit(f"REFUSING TO SHIP - secrets/personal state in dist: {bad}")
     for must in ("MarketForge.exe", "static/index.html", "static/setup.html",
                  "bot/run_bot.py", "bot/src/api.py", "bot/.env.template",
-                 "panels/00-welcome.html", "RULES.template.md", "CLAUDE.md",
+                 "panels/00-welcome.html", "RULES.template.md", "AGENTS.md", "CLAUDE.md",
                  "run-tradingview.bat"):
         if not (DIST / must).exists():
             raise SystemExit(f"dist is missing {must}")

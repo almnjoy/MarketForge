@@ -195,14 +195,15 @@ def _scoring_state():
     """
     try:
         import llm
-        agent_bin = llm._agent_bin()
+        agent_bin, agent_kind = llm._agent_bin()
     except Exception:
-        agent_bin = None
+        agent_bin, agent_kind = None, None
     provider = getattr(config, "RADAR_LLM_PROVIDER", "auto")
     if not config.RADAR_USE_LLM:
         effective, runtime, model, where = "off", "scoring disabled", "rules-only (no LLM)", ""
     elif provider in ("auto", "agent") and agent_bin:
-        effective, runtime = "agent", "coding-agent CLI (local)"
+        effective = "agent"
+        runtime = f"{agent_kind} CLI (local)" if agent_kind else "coding-agent CLI (local)"
         model, where = config.RADAR_AGENT_MODEL, agent_bin
     elif provider == "agent":
         effective, runtime = "unavailable", "coding-agent CLI (NOT FOUND on PATH)"
@@ -215,7 +216,7 @@ def _scoring_state():
         model, where = "rules-only (no LLM)", ""
     return {"enabled": bool(config.RADAR_USE_LLM), "provider": provider,
             "effective": effective, "runtime": runtime, "model": model, "where": where,
-            "min_score": config.RADAR_LLM_MIN_SCORE}
+            "agent_kind": agent_kind, "min_score": config.RADAR_LLM_MIN_SCORE}
 
 
 _sweep_attempts: dict[str, int] = {}   # symbol -> failed arm attempts
