@@ -89,6 +89,13 @@ jobs:
           draft: true          # you review it before anyone can download
           generate_release_notes: true
           body: |
+            ## Download **MarketForge-win64.zip** (below, under Assets)
+
+            Not "Source code (zip)" - GitHub adds that to every release
+            automatically and it contains the project, not the app. If you unzip
+            something and there is no `MarketForge.exe` in it, that is the one
+            you got.
+
             **Windows app.** Unzip, run `MarketForge.exe`. No Python needed.
 
             Your keys, trading plan, ledger and boards live in

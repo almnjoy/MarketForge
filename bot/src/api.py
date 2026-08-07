@@ -219,6 +219,7 @@ def _scoring_state():
 
 
 _sweep_attempts: dict[str, int] = {}   # symbol -> failed arm attempts
+_sweep_seen: set[str] = set()          # already announced; cleared when it clears
 
 
 def _protect_worker():
@@ -256,23 +257,49 @@ def _protect_worker():
             # The sweep. This used to only print, which found the problem and then
             # did nothing about it. Now it arms, because the one thing this app
             # promises is that a position is never left without an exit.
-            for u in unprotected_positions(client):
+            naked = unprotected_positions(client)
+            live = {u["symbol"] for u in naked}
+            for gone in [s for s in _sweep_seen if s not in live]:
+                _sweep_seen.discard(gone)        # protected or closed; report it again if it returns
+                _sweep_attempts.pop(gone, None)
+            for u in naked:
                 sym = u["symbol"]
-                print(f"[protect] !! UNPROTECTED POSITION: {sym} qty {u['qty']} "
-                      f"@ {u['avg_entry']} - no working exit order")
+                qty = abs(float(u.get("qty") or 0))
+                first = sym not in _sweep_seen
+                if first:
+                    # Say it ONCE per episode. Reprinting five symbols every 30s
+                    # buries the one line that matters under its own noise.
+                    _sweep_seen.add(sym)
+                    print(f"[protect] !! UNPROTECTED POSITION: {sym} qty {u['qty']} "
+                          f"@ {u['avg_entry']} - no working exit order")
                 if not config.SWEEP_AUTO_ARM:
                     continue
                 if _sweep_attempts.get(sym, 0) >= config.SWEEP_MAX_ATTEMPTS:
-                    continue                      # already tried, stop shouting
+                    continue                      # already tried enough, stay quiet
+                if qty < 1:
+                    # Alpaca cannot attach a trailing stop to a fractional
+                    # position. That is a permanent property of the position, not
+                    # a transient failure, so retrying it forever is pointless.
+                    _sweep_attempts[sym] = config.SWEEP_MAX_ATTEMPTS
+                    print(f"[protect] {sym} is FRACTIONAL ({qty:g} shares) - a trailing "
+                          f"stop needs at least 1 whole share, so this position cannot "
+                          f"be auto-protected. Close it by hand, or size in whole shares.")
+                    continue
                 try:
                     res = arm_trail(client, sym, config.SWEEP_TRAIL_PCT)
-                    _sweep_attempts.pop(sym, None)
-                    print(f"[protect] sweep-armed {sym} at {config.SWEEP_TRAIL_PCT}%: {res}")
                 except Exception as e:
+                    res = {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+                # arm_trail RETURNS a status dict, it does not raise. Treating a
+                # missing exception as success cleared the attempt counter every
+                # pass, so the cap never engaged and the sweep retried forever.
+                if res.get("ok"):
+                    _sweep_attempts.pop(sym, None)
+                    print(f"[protect] sweep-armed {sym} at {config.SWEEP_TRAIL_PCT}%")
+                else:
                     n = _sweep_attempts.get(sym, 0) + 1
                     _sweep_attempts[sym] = n
-                    print(f"[protect] sweep could not arm {sym} "
-                          f"(attempt {n}/{config.SWEEP_MAX_ATTEMPTS}): {e}")
+                    print(f"[protect] sweep could NOT arm {sym} "
+                          f"(attempt {n}/{config.SWEEP_MAX_ATTEMPTS}): {res.get('error')}")
         except Exception as e:
             print(f"[protect] worker error: {e}")
         time.sleep(30)

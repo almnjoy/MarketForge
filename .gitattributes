@@ -1,0 +1,37 @@
+# What lands in GitHub's auto-generated "Source code (zip)".
+#
+# GitHub attaches that archive to every release, right next to the real Windows
+# build - and it is named MarketForge-<tag>.zip, which looks more official than
+# MarketForge-win64.zip. People download it by mistake, then wonder where the
+# .exe is and why there is a .github folder in their trading app.
+#
+# We cannot remove GitHub's archive, but export-ignore controls what is IN it.
+# Rule of thumb: if someone cloning to RUN the app would not open it, it goes.
+# The repo keeps all of this; only the archive is slimmed.
+
+# Maintainer-only. Nothing here helps you run the app.
+.github/            export-ignore
+.gitattributes      export-ignore
+.gitignore          export-ignore
+RELEASING.md        export-ignore
+_retired/           export-ignore
+
+# ~4.9MB of demo media and capture rigs. Watch the video on the site instead.
+demo/               export-ignore
+
+# ~4MB of images that exist for the README on github.com, where you are already
+# looking at them. The prose docs (API.md, PACKAGING.md, NATIVE-SHELL-PLAN.md)
+# STAY - those are genuinely useful offline.
+docs/screenshots/   export-ignore
+docs/architecture.png export-ignore
+
+# Normalize line endings in the archive so a Windows user does not get a wall of
+# LF-only files, and so diffs stop showing phantom whole-file changes.
+* text=auto
+*.png binary
+*.gif binary
+*.svg text
+*.ico binary
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.sh  text eol=lf
