@@ -1,0 +1,77 @@
+# Build the Windows app and attach it to a GitHub Release.
+#
+# Runs on a tag (v*). PyInstaller builds for the OS it runs on, so the Windows
+# binary needs a Windows runner - that is the whole reason this exists rather
+# than building on the dev machine.
+#
+# NOTE: the actual PyInstaller spec is produced by the packaging work on the
+# `packaging` branch. Until that lands this workflow is inert (it only fires on
+# a tag). Do not tag until `MarketForge.spec` exists and a frozen build has been
+# tested on a clean machine - see RELEASING.md.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:        # lets you dry-run it without cutting a release
+
+permissions:
+  contents: write           # needed to create the release
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pywebview
+
+      - name: Refuse to build if secrets would ship
+        shell: bash
+        run: |
+          # bot/.env is gitignored, so it should never exist in a fresh checkout.
+          # If it somehow does, stop - shipping keys is unrecoverable.
+          if [ -f bot/.env ]; then
+            echo "::error::bot/.env present in a clean checkout - refusing to build"
+            exit 1
+          fi
+          grep -q "STOCK_ENV=paper" bot/.env.template || {
+            echo "::error::.env.template must ship paper-first"; exit 1; }
+          echo "pre-flight OK"
+
+      - name: Build
+        run: pyinstaller MarketForge.spec --noconfirm
+
+      - name: Package
+        shell: bash
+        run: |
+          cd dist
+          # one-folder build: zip the folder, not a loose exe
+          7z a -tzip "../MarketForge-win64.zip" MarketForge/
+          cd ..
+          echo "--- contents sanity ---"
+          7z l MarketForge-win64.zip | grep -iE "\.env$" && {
+            echo "::error::an .env got into the zip"; exit 1; } || echo "no .env in zip"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: MarketForge-win64.zip
+          draft: true          # you review it before anyone can download
+          generate_release_notes: true
+          body: |
+            **Windows app.** Unzip, run `MarketForge.exe`. No Python needed.
+
+            Ships in **paper mode** with auto-trading off. Free Alpaca paper keys
+            at alpaca.markets. Prefer to run from source, or on macOS/Linux? See
+            the README - same code, all platforms.
+
+            Market Forge is a research and education tool, not financial advice.
+            Trading involves substantial risk of loss.
