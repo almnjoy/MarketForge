@@ -14,10 +14,24 @@ Output: `dist/MarketForge/` (double-clickable folder) and
 `dist/MarketForge-win64.zip` (~21 MB). `build.py` refuses to ship if
 `bot/.env` or any personal state file lands in the dist.
 
-**Do not LIVE in dist/.** It is build output, wiped on every build - keys and
-state saved there die with the next `python build.py` (which is why testing
-from dist re-ran the key wizard on every rebuild). Copy the folder somewhere
-permanent and run from the copy; setup then happens exactly once.
+**The program folder is disposable, and that is the point.** A frozen build keeps
+everything of the user's in a WORKSPACE outside it:
+
+```
+%USERPROFILE%\MarketForge\     bot/.env, bot/data/ (the ledger), RULES.md,
+                               memory.md, journal.jsonl, panels/, saved boards
+```
+
+So `dist/` being wiped on every build costs nothing: keys and state are not in
+there. Updating is "delete the old folder, unzip the new one", with no migration
+step and nothing to back up first. `MF_WORKSPACE` overrides the location, which
+is also how you exercise the packaged layout from a source run.
+
+A source checkout still keeps everything in the repo folder, exactly as before -
+`WORK == ROOT` when not frozen, so development is unchanged.
+
+Earlier builds put user state inside `dist/`, which meant testing from dist
+re-ran the key wizard after every rebuild. That is fixed, not worked around.
 
 ## The shape of the build (and why)
 

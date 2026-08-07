@@ -137,10 +137,18 @@ def main():
     zip_dist()
     step(f"done -> {DIST}")
     print(f"""
-  dist/ is BUILD OUTPUT and is wiped on every build - keys and state saved in
-  there do not survive a rebuild. To actually USE the desk, copy the folder
-  somewhere permanent (short path, e.g. C:\\MarketForge) and run it from there;
-  the wizard then asks for keys exactly once.""")
+  dist/ is BUILD OUTPUT and is wiped on every build - but that no longer costs
+  you anything. A packaged build keeps your keys, trading plan, ledger, journal
+  and boards in a WORKSPACE outside the program folder:
+
+      %USERPROFILE%\\MarketForge
+
+  So the app folder is disposable by design: delete it, unzip a new version,
+  and everything of yours is still there. That is the whole update story.
+
+  Run it from anywhere (a short path like C:\\MarketForge is still kinder to
+  Windows). The wizard asks for keys once, then never again - not even after a
+  rebuild. Set MF_WORKSPACE to put the workspace somewhere else.""")
 
 
 if __name__ == "__main__":
