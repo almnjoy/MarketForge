@@ -747,9 +747,16 @@ def api_paper_order():
         res = paper.place(symbol, body.get("side") or "buy",
                           notional=notional, qty=body.get("qty"),
                           trail_pct=body.get("exit_trail_pct"),
-                          note=body.get("note") or "")
+                          note=body.get("note") or "",
+                          allow_repeat=bool(body.get("allow_repeat")))
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:300]}), 502
+
+    # A duplicate is a 409, not a 200 and not a 500. The caller retried; tell it
+    # the truth without placing anything and without looking like a failure.
+    if res.get("duplicate"):
+        print(f"[paper] duplicate refused: {res.get('error')}")
+        return jsonify(res), 409
 
     if capped:
         res["size_capped"] = capped

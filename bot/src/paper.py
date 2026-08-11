@@ -28,7 +28,10 @@ Safety properties
 """
 from __future__ import annotations
 
+import json
+import threading
 import uuid
+from datetime import datetime, timedelta
 
 import config
 from alpaca_client import AlpacaClient
@@ -104,6 +107,68 @@ def check():
     return out
 
 
+# ---------------------------------------------------------------------------
+# IDEMPOTENCY
+#
+# 2026-08-11: RPD showed 108 shares from three identical fires and HQI 58 from
+# two, because a duplicated bridge turn replayed the same order and nothing
+# checked. The damage is not the accounting - it is that RPD's 36-share chase
+# entry was the CONTROL LEG of a chase-versus-retest test, and a control leg at
+# 3x size with a blended average is not a control. The experiment was corrupted
+# before it ran.
+#
+# The general rule this taught: the moment a lane stops being watched it has to
+# become idempotent, because nobody is there to notice the double. Paper became
+# silent and automatic in the same hour it fired three times on one name, and it
+# only surfaced because a replay went looking.
+#
+# Key is (symbol, side, YYYY-MM-DD). One fire per name per direction per day.
+# ---------------------------------------------------------------------------
+FIRES_PATH = config.DATA_DIR / "paper-fires.json"
+_fires_lock = threading.Lock()
+
+
+def _fires_load():
+    try:
+        return json.loads(FIRES_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _fire_key(symbol, side, day=None):
+    day = day or datetime.now().strftime("%Y-%m-%d")
+    return f"{symbol.upper()}|{(side or 'buy').lower()}|{day}"
+
+
+def already_fired(symbol, side, day=None):
+    """The prior fire for this key, or None. Read-only."""
+    return _fires_load().get(_fire_key(symbol, side, day))
+
+
+def _fire_record(symbol, side, info):
+    with _fires_lock:
+        fires = _fires_load()
+        # Keep only the last 7 days so the file cannot grow without bound.
+        cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        fires = {k: v for k, v in fires.items() if k.rsplit("|", 1)[-1] >= cutoff}
+        fires[_fire_key(symbol, side)] = info
+        try:
+            FIRES_PATH.parent.mkdir(parents=True, exist_ok=True)
+            FIRES_PATH.write_text(json.dumps(fires, indent=1), encoding="utf-8")
+        except Exception as e:
+            print(f"[paper] could not persist fire log: {e}")
+
+
+def clear_fire(symbol, side, day=None):
+    """Deliberately allow a re-fire. Used by the reset tool, not by the app."""
+    with _fires_lock:
+        fires = _fires_load()
+        gone = fires.pop(_fire_key(symbol, side, day), None)
+        if gone is not None:
+            FIRES_PATH.write_text(json.dumps(fires, indent=1), encoding="utf-8")
+        return gone
+
+
 def _record(client_order_id, symbol, side, qty, resp):
     """Write the shadow fill to trades-paper.db, never the live ledger.
 
@@ -126,7 +191,8 @@ def _record(client_order_id, symbol, side, qty, resp):
     return None
 
 
-def place(symbol, side, *, notional=None, qty=None, trail_pct=None, note=""):
+def place(symbol, side, *, notional=None, qty=None, trail_pct=None, note="",
+          allow_repeat=False):
     """Submit the ENTRY on paper. Does NOT arm the exit - see below.
 
     THE DEFECT THIS FUNCTION USED TO HAVE (2026-08-11): it submitted the
@@ -153,6 +219,18 @@ def place(symbol, side, *, notional=None, qty=None, trail_pct=None, note=""):
     side = (side or "buy").lower()
     want_trail = trail_pct is not None
 
+    # Idempotency FIRST, before anything touches the broker. A retried bridge
+    # turn must cost nothing.
+    if not allow_repeat:
+        prior = already_fired(symbol, side)
+        if prior:
+            return {"ok": False, "duplicate": True, "venue": "paper",
+                    "symbol": symbol, "side": side, "prior": prior,
+                    "error": (f"{symbol} {side} already fired today at "
+                              f"{prior.get('at')} (qty {prior.get('qty')}, "
+                              f"order {prior.get('order_id')}). Refusing the "
+                              f"repeat. Pass allow_repeat to override.")}
+
     # Force whole shares whenever an exit is wanted, and by default always, so
     # the paper book stops accumulating fractional positions that are
     # permanently unprotectable (BEX, CWVX, IESC, IREG, MANH, TCX got in that
@@ -163,11 +241,15 @@ def place(symbol, side, *, notional=None, qty=None, trail_pct=None, note=""):
         px = c.get_latest_price(symbol)
         if not px:
             raise PaperUnavailable("no price available to size whole shares")
-        qty = int(float(notional) * 100 // px)
+        # Keep the requested dollars for the error message. Clearing `notional`
+        # first meant the refusal always read "$0.00 is under one share", which
+        # tells you nothing about what you asked for.
+        wanted = float(notional)
+        qty = int(wanted * 100 // px)
         notional = None
         if qty < 1:
             raise PaperUnavailable(
-                f"${float(notional or 0):.2f} is under one share of {symbol} "
+                f"${wanted:.2f} is under one share of {symbol} "
                 f"(${px/100:.2f}). A fractional position cannot carry a trailing "
                 f"stop, so this order was not placed.")
 
@@ -175,6 +257,13 @@ def place(symbol, side, *, notional=None, qty=None, trail_pct=None, note=""):
     resp = c.submit_market_order(symbol=symbol, side=side, notional=notional,
                                  qty=qty, client_order_id=coid)
     ledger_error = _record(coid, symbol, side, qty, resp)
+
+    # Record the fire the moment the broker accepts it. Written AFTER the order
+    # rather than before, so a rejected order does not lock the symbol out for
+    # the rest of the day.
+    _fire_record(symbol, side, {"at": datetime.now().strftime("%H:%M:%S"),
+                                "qty": qty, "notional": notional,
+                                "order_id": resp.get("id"), "note": note[:120]})
 
     out = {"ok": True, "venue": "paper", "symbol": symbol, "side": side,
            "notional": notional, "qty": qty, "status": resp.get("status"),
