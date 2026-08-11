@@ -36,6 +36,7 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
 
 <nav id="tabs">
   <button data-tab="overview" class="on">OVERVIEW</button>
+  <button data-tab="paper">PAPER</button>
   <button data-tab="radar">CATALYST_RADAR</button>
   <button data-tab="retail">RETAIL_RADAR</button>
   <button data-tab="workbench">WORKBENCH</button>
@@ -83,13 +84,51 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
     </div>
   </section>
 
+  <!-- PAPER: the shadow book. Every plan fills here; live only ever stages. -->
+  <section id="view-paper" class="view">
+    <div id="paperLink" class="naked hidden"></div>
+    <div id="paperStatRow" class="stat-row"></div>
+    <div class="panel">
+      <div class="panel-h">PAPER_ACCOUNT
+        <span class="dim">shadow book · always paper · real money never touched here</span>
+        <button id="paperRefresh" class="btn sm right">Refresh</button></div>
+      <div id="paperWhy" class="dim" style="padding:8px 10px;line-height:1.5"></div>
+    </div>
+    <div class="two-col">
+      <div class="panel">
+        <div class="panel-h">PAPER_POSITIONS <span id="paperPosCount" class="dim"></span></div>
+        <div id="paperPositions">loading...</div>
+      </div>
+      <div class="panel">
+        <div class="panel-h">PAPER_WORKING_ORDERS <span class="dim">stops + trails</span></div>
+        <div id="paperOrders">loading...</div>
+      </div>
+    </div>
+  </section>
+
   <!-- CATALYST RADAR -->
   <section id="view-radar" class="view">
     <div class="panel">
       <div class="panel-h">CATALYST_RADAR <span id="radarCount" class="dim"></span>
         <span id="lastScan" class="dim right"></span>
         <button id="radarSettings" class="btn sm" style="margin-left:10px">⚙ Scan settings</button>
+        <button id="schedBtn" class="btn sm" style="margin-left:6px">⏱ Schedule</button>
         <button id="radarRefresh" class="btn sm" style="margin-left:6px">Re-scan</button></div>
+      <div id="schedBox" class="scanbox hidden">
+        <div class="sched-row">
+          <label><input type="checkbox" id="schedOn"> Run a scan every</label>
+          <input type="number" id="schedMin" min="1" max="1440" step="5" value="30" class="syminput mono" style="width:70px">
+          <span class="dim">minutes</span>
+          <label style="margin-left:14px"><input type="checkbox" id="schedRth" checked> market hours only</label>
+          <button id="schedSave" class="btn sm">Save</button>
+          <span id="schedState" class="dim"></span>
+        </div>
+        <div class="dim" style="font-size:12px;margin-top:6px">
+          Runs inside this app, so it stops when the desk stops. Every run is
+          written to <b>journal.jsonl</b> and shows on the JOURNAL tab.
+        </div>
+        <div id="schedRuns" class="sched-runs"></div>
+      </div>
       <div id="scanCatalyst" class="scanbox hidden"></div>
       <div id="radar" class="cards"></div>
     </div>
@@ -98,8 +137,11 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
   <!-- RETAIL RADAR (reddit) -->
   <section id="view-retail" class="view">
     <div class="panel">
-      <div class="panel-h">RETAIL_RADAR · Reddit <span id="redditSubs" class="dim"></span>
-        <button id="retailSettings" class="btn sm right">⚙ Scan settings</button></div>
+      <div class="panel-h">RETAIL_RADAR · Reddit <span id="redditCount" class="dim"></span>
+        <span id="redditSubs" class="subchips"></span>
+        <span id="redditUpdated" class="dim right" style="margin-right:10px"></span>
+        <button id="retailSettings" class="btn sm">⚙ Scan settings</button>
+        <button id="retailRefresh" class="btn sm" style="margin-left:6px">Refresh</button></div>
       <div id="scanRetail" class="scanbox hidden"></div>
       <div id="reddit" class="cards"></div>
     </div>

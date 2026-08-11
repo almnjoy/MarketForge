@@ -83,6 +83,32 @@ _TRADE_HOST = {
     "live": "https://api.alpaca.markets",
 }
 TRADE_BASE = _TRADE_HOST[STOCK_ENV]
+
+# --- The paper lane, ALWAYS available regardless of STOCK_ENV --------------
+# STOCK_ENV picks ONE venue for the whole process, so with STOCK_ENV=live the
+# desk had no way to touch paper at all. The shadow lane needs both at once:
+# every plan executes on paper for the data, and only the live ticket is staged
+# for a human. These constants are therefore independent of STOCK_ENV and always
+# point at the paper endpoint with the paper key pair.
+PAPER_TRADE_BASE = _TRADE_HOST["paper"]
+PAPER_KEY_ID = _get("ALPACA_KEY_ID", "") or ""
+PAPER_SECRET = _get("ALPACA_SECRET_KEY", "") or ""
+# Shadow fills land here even when the process is running live, so paper never
+# contaminates the live breaker math (same reason DB_PATH splits).
+PAPER_DB_PATH = DATA_DIR / "trades-paper.db"
+# Alpaca cannot attach a trailing stop to a FRACTIONAL position, so a fractional
+# entry is a position that can never be protected. Default on: convert notional
+# to whole shares, and refuse the order if it cannot afford one share.
+PAPER_WHOLE_SHARES_ONLY = (_get("PAPER_WHOLE_SHARES_ONLY", "true") or "true").lower() == "true"
+# Optional ceiling on paper order size. DEFAULT OFF (0).
+#
+# This shipped 2026-08-10 defaulting to 50 and it SILENTLY halved orders: a $100
+# paper order was recorded as $50 with no notice, which corrupts the P/L record
+# the whole shadow book exists to produce. Two things were wrong with that. The
+# $50 training-wheels cap had already been retired, and a silent clamp is the
+# hard-block behavior the risk layer just moved away from.
+# Left in as an explicit opt-in. When set it is announced, never silent.
+PAPER_MAX_NOTIONAL = float(_get("PAPER_MAX_NOTIONAL", 0))
 # Market data is the same host for both envs (data plan, not the trading env).
 DATA_BASE = _get("ALPACA_DATA_BASE", "https://data.alpaca.markets")
 
@@ -116,11 +142,38 @@ ATR_PERIOD = int(_get("ATR_PERIOD", 14))
 ATR_STOP_MULT = float(_get("ATR_STOP_MULT", 2.5))   # initial stop = entry - mult*ATR
 PULLBACK_SMA = int(_get("PULLBACK_SMA", 20))        # entry trigger reference
 
+# --- Short lane (see short_signals.py + BRAIN-2-SHORT.md) ------------------
+# Derived from Ariel Hernandez's stated rules, not invented. PAPER ONLY until
+# the BRAIN-2 gates are closed.
+SHORT_TREND_SMA = int(_get("SHORT_TREND_SMA", 50))       # the "is it broken" line
+SHORT_ENTRY_SMA = int(_get("SHORT_ENTRY_SMA", 20))       # the average it fails at
+SHORT_SLOPE_LOOKBACK = int(_get("SHORT_SLOPE_LOOKBACK", 5))   # bars used to call an MA "declining"
+# THE rule: reject anything more than this many ATRs BELOW the trend SMA.
+# "Do not short in the hole unless you absolutely hate your money."
+SHORT_MAX_ATR_BELOW = float(_get("SHORT_MAX_ATR_BELOW", 4.0))
+SHORT_MA_TAG_TOLERANCE = float(_get("SHORT_MA_TAG_TOLERANCE", 0.01))  # how close the high must get
+SHORT_STOP_ATR_BUFFER = float(_get("SHORT_STOP_ATR_BUFFER", 0.25))    # stop = max(high, MA) + this*ATR
+SHORT_MIN_PRICE_CENTS = int(_get("SHORT_MIN_PRICE_CENTS", 500))       # never short sub-$5
+
 # --- Sizing / risk gates ---------------------------------------------------
 # Primary sizing is RISK-BASED (fixed-fractional off stop distance), NOT Kelly.
 # Kelly is only an optional cap (edge in equities is dubious). See risk.py.
+# advisory (default) = caps become plain-language NOTICES and the ticket still
+#   stages; only G1 signal / G5 breakers / G9 fat-finger actually block.
+# strict = the original behavior, all nine gates must pass.
+RISK_MODE = (_get("RISK_MODE", "advisory") or "advisory").lower()
 RISK_PER_TRADE_PCT = float(_get("RISK_PER_TRADE_PCT", 0.01))   # 1% of bankroll risked to the stop
-MAX_POSITION_PCT = float(_get("MAX_POSITION_PCT", 0.20))       # notional cap per name
+
+# The position cap answers a DIFFERENT question than RISK_PER_TRADE_PCT:
+#   RISK_PER_TRADE_PCT -> what you lose if the stop WORKS
+#   MAX_POSITION_PCT   -> what you lose if it does NOT (gap, halt, reopen)
+# So the cap is derived from a gap tolerance rather than hand-picked:
+#   MAX_POSITION_PCT = MAX_GAP_LOSS_PCT / ASSUMED_GAP_PCT
+# "I will not lose more than 3% to a 30% overnight gap" -> a 10% position cap.
+# Set either to 0 to fall back to the literal MAX_POSITION_PCT below.
+MAX_GAP_LOSS_PCT = float(_get("MAX_GAP_LOSS_PCT", 0.03))
+ASSUMED_GAP_PCT = float(_get("ASSUMED_GAP_PCT", 0.30))
+MAX_POSITION_PCT = float(_get("MAX_POSITION_PCT", 0.20))       # fallback / literal cap
 MAX_SECTOR_PCT = float(_get("MAX_SECTOR_PCT", 0.40))           # notional cap per sector
 MAX_POSITIONS = int(_get("MAX_POSITIONS", 8))
 KELLY_FRACTION = float(_get("KELLY_FRACTION", 0.25))           # quarter-Kelly, used only as a cap

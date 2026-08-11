@@ -26,6 +26,7 @@ import argparse
 import json
 import math
 
+import advice
 import config
 import db
 import portfolio
@@ -60,7 +61,10 @@ def position_size(entry_cents, stop_cents, bankroll_cents, cfg=config,
     dollars risked to the stop = RISK_PER_TRADE_PCT * bankroll
     per-share risk            = entry - stop
     raw shares                = risk / per-share risk
-    then cap at MAX_POSITION_PCT of bankroll (and optionally quarter-Kelly).
+
+    In STRICT mode that is then clamped to MAX_POSITION_PCT of bankroll. In
+    ADVISORY mode (the default) it is not - the concentration is reported by
+    advice.advise() instead. Quarter-Kelly still applies in both when enabled.
     """
     per_share_risk = entry_cents - stop_cents
     if per_share_risk <= 0 or entry_cents <= 0:
@@ -68,8 +72,20 @@ def position_size(entry_cents, stop_cents, bankroll_cents, cfg=config,
     risk_budget_cents = cfg.RISK_PER_TRADE_PCT * bankroll_cents
     raw = risk_budget_cents / per_share_risk
 
-    notional_cap_shares = (cfg.MAX_POSITION_PCT * bankroll_cents) / entry_cents
-    qty = min(raw, notional_cap_shares)
+    # MAX_POSITION_PCT was clamped here unconditionally, which meant G3 could
+    # almost never fail: sizing had already made the position legal before the
+    # gate looked at it. Advisory mode would then have been decoration - the bot
+    # would still never PROPOSE more than 10%.
+    #
+    # In advisory mode the risk math decides the size (you still only risk
+    # RISK_PER_TRADE_PCT to the stop) and the concentration is reported as a
+    # notice. A tight stop on an expensive share legitimately wants a large
+    # notional; that is the case Dustin asked to be told about rather than
+    # silently shrunk.
+    qty = raw
+    if getattr(cfg, "RISK_MODE", "advisory") == "strict":
+        cap_pct = advice.derived_position_cap(cfg)
+        qty = min(raw, (cap_pct * bankroll_cents) / entry_cents)
 
     if cfg.USE_KELLY_CAP:
         kc = kelly_cap_shares(entry_cents, stop_cents, target_cents, p_win, bankroll_cents, cfg)
@@ -167,11 +183,12 @@ def evaluate(ctx, cfg=config):
                                       target_cents=ctx.get("target_cents"),
                                       p_win=ctx.get("p_win"))
 
-    # G3 position cap
-    gates["G3_position_cap"] = notional <= cfg.MAX_POSITION_PCT * bankroll + 1e-6 and notional > 0
+    # G3 position cap (derived from the gap tolerance, see advice.py)
+    cap_pct = advice.derived_position_cap(cfg)
+    gates["G3_position_cap"] = notional <= cap_pct * bankroll + 1e-6 and notional > 0
     if notional <= 0:
         reasons.append("G3: computed size is 0 (risk budget too small for the stop distance)")
-    elif notional > cfg.MAX_POSITION_PCT * bankroll + 1e-6:
+    elif notional > cap_pct * bankroll + 1e-6:
         reasons.append("G3: notional exceeds position cap")
 
     # G4 sector cap
@@ -203,9 +220,20 @@ def evaluate(ctx, cfg=config):
         reasons.append(f"G9: limit strays >{cfg.MAX_LIMIT_DEVIATION_PCT:.0%} from reference")
     gates["G9_fat_finger"] = g9
 
+    # ADVISORY MODE (default, set 2026-08-11).
+    #
+    # A failing soft gate no longer kills the ticket. It becomes a sentence, the
+    # trade still stages, and the operator decides. Only G1/G5/G9 block, because
+    # those are correctness (no stop, kill switch tripped, fat finger) rather
+    # than a preference about concentration. Set RISK_MODE=strict to restore the
+    # old all-nine behavior without touching code.
     all_pass = all(gates.values())
+    blocking = advice.blocking_gates(gates, cfg)
+    staged = not blocking
+    advisories = advice.advise(ctx, gates, notional, qty, cfg) if not blocking else []
+
     order = None
-    if all_pass:
+    if staged and qty > 0 and entry and stop:
         order = {
             "symbol": sym,
             "sector": ctx.get("sector", "unknown"),
@@ -217,9 +245,15 @@ def evaluate(ctx, cfg=config):
             "confidence": ctx.get("confidence"),
             "reason": ctx.get("signal_reason", "trend_pullback_reclaim"),
             "env": cfg.STOCK_ENV,
+            # Carried ON the ticket so the thing the operator clicks is the same
+            # object that knows what is unusual about it.
+            "advisories": advisories,
+            "soft_gates_failed": [g for g, ok in gates.items()
+                                  if not ok and g not in advice.HARD_GATES],
         }
-    return {"symbol": sym, "staged": all_pass, "gates": gates, "order": order,
-            "reasons": reasons, "halt": False}
+    return {"symbol": sym, "staged": staged, "all_gates_pass": all_pass,
+            "gates": gates, "blocking": blocking, "order": order,
+            "advisories": advisories, "reasons": reasons, "halt": False}
 
 
 # ==========================================================================
@@ -309,6 +343,9 @@ def _merge_staged(new_orders):
 
 def _print_report(results, staged):
     print(config.env_banner())
+    print(f"risk mode: {getattr(config, 'RISK_MODE', 'advisory').upper()}"
+          + ("  (caps are notices, not blocks)"
+             if getattr(config, "RISK_MODE", "advisory") != "strict" else ""))
     print(f"{'symbol':<8}{'entry':>9}{'stop':>9}{'qty':>8}  verdict")
     for r in results:
         o = r["order"] or {}
@@ -316,13 +353,15 @@ def _print_report(results, staged):
         stop = o.get("stop_hint_cents")
         qty = o.get("qty")
         if r["staged"]:
-            verdict = "STAGED"
+            verdict = "STAGED" if r.get("all_gates_pass") else "STAGED (with notes)"
         else:
-            failed = [g for g, ok in r["gates"].items() if not ok]
-            verdict = f"FAIL {failed}" if failed else "SKIP"
+            verdict = f"BLOCKED {r.get('blocking') or []}"
         e = f"{entry/100:.2f}" if entry else "-"
         s = f"{stop/100:.2f}" if stop else "-"
         print(f"{r['symbol']:<8}{e:>9}{s:>9}{str(qty or '-'):>8}  {verdict}")
+        # The whole point: say the number out loud, next to the ticket.
+        for a in r.get("advisories") or []:
+            print(f"          - [{a['severity']}] {a['message']}")
     print(f"\nStaged {len(staged)} order(s) -> {config.STAGED_ORDERS_PATH}")
     if staged:
         print("Review data/staged_orders.json, then run execute.py (human-gated) to place them.")

@@ -161,7 +161,16 @@ def get_trending_cached(client, cfg=config):
         if len(trending) >= 12:
             break
 
-    payload = {"generated": now, "subs": subs_ok, "trending": trending}
+    # Per-sub fetch times. The round-robin only refreshes ONE sub per call, so a
+    # single "generated" timestamp hides the fact that r/stocks might be 40
+    # minutes old while r/wallstreetbets is fresh. The UI shows both.
+    fetched = {sub: float((subs.get(sub) or {}).get("fetched", 0))
+               for sub in cfg.RADAR_REDDIT_SUBS}
+    payload = {"generated": now, "subs": subs_ok, "trending": trending,
+               "sub_fetched": fetched,
+               "cache_secs": cfg.RADAR_REDDIT_CACHE_SECS,
+               "oldest_sub_age_s": int(max((now - t) for t in fetched.values())
+                                       if fetched else 0)}
     store["payload"], store["payload_at"] = payload, now
     try:
         CACHE_PATH.write_text(json.dumps(store))

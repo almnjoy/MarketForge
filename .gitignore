@@ -38,6 +38,9 @@ webview-data/
 logs/
 bot/.env.bak*
 
+#Extra research into trading 
+research/
+
 # personal trading playbooks - not product
 BRAIN-*.md
 staged-trade.json

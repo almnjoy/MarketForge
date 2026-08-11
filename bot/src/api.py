@@ -44,15 +44,68 @@ app = Flask(__name__)
 #   3. a startup + periodic sweep that finds ANY unprotected position
 # The queue is on disk, so restarting the bot does not lose a pending exit.
 # ---------------------------------------------------------------------------
+#
+# 2026-08-11: all three layers were hardwired to ONE venue. Every protection
+# path built a bare AlpacaClient(), which reads config.API_KEY_ID/TRADE_BASE and
+# therefore *is* the live account whenever STOCK_ENV=live. The paper lane
+# inherited none of it: no watcher, no sweep, no /protect. Paper entries armed a
+# trail inline or not at all, and "not at all" is what happened, because the
+# protective order was submitted while the entry was still working.
+#
+# The guarantee is now per-VENUE. Everything below takes a venue string, and the
+# worker iterates every venue that is configured.
+# ---------------------------------------------------------------------------
 PROTECT_FILE = config.DATA_DIR / "pending-protect.json"
 _protect_lock = threading.Lock()
+
+LIVE_VENUE = config.STOCK_ENV        # whatever this process was started as
+
+
+def _venue_client(venue):
+    """An AlpacaClient for the named venue.
+
+    The PROCESS venue always uses the plain client, exactly as before. Only the
+    *extra* paper venue goes through paper.client().
+
+    That asymmetry is deliberate. paper.client() enforces a PK key prefix, and
+    routing the process's own venue through it would make a previously working
+    STOCK_ENV=paper desk fail its sweep the moment a key did not match that
+    shape. A hardening check on a new code path must not become a new failure
+    mode on the old one.
+    """
+    if venue == LIVE_VENUE:
+        return AlpacaClient()
+    if venue == "paper":
+        import paper
+        return paper.client()
+    raise RuntimeError(f"unknown venue {venue!r}")
+
+
+def _venues():
+    """Venues this process can protect, best-effort. The process venue always
+    counts; paper is added when its keys check out (and is not duplicated when
+    the process itself is paper)."""
+    out = [LIVE_VENUE]
+    if LIVE_VENUE != "paper":
+        try:
+            import paper
+            if paper.configured()[0]:
+                out.append("paper")
+        except Exception:
+            pass
+    return out
 
 
 def _protect_load():
     try:
-        return json.loads(PROTECT_FILE.read_text(encoding="utf-8"))
+        rows = json.loads(PROTECT_FILE.read_text(encoding="utf-8"))
     except Exception:
         return []
+    # Rows written before venues existed have no venue key. They were, by
+    # definition, this process's venue.
+    for r in rows:
+        r.setdefault("venue", LIVE_VENUE)
+    return rows
 
 
 def _protect_save(rows):
@@ -63,15 +116,70 @@ def _protect_save(rows):
         print(f"[protect] could not persist queue: {e}")
 
 
-def _protect_queue_add(order_id, symbol, trail_pct):
+def _protect_queue_add(order_id, symbol, trail_pct, venue=None):
     if not order_id:
         return
+    venue = venue or LIVE_VENUE
     with _protect_lock:
         rows = [r for r in _protect_load() if r.get("order_id") != order_id]
-        rows.append({"order_id": order_id, "symbol": symbol,
+        rows.append({"order_id": order_id, "symbol": symbol, "venue": venue,
                      "trail_pct": float(trail_pct), "added": time.time()})
         _protect_save(rows)
-    print(f"[protect] queued {symbol} order {order_id} for a {trail_pct}% trail")
+    print(f"[protect/{venue}] queued {symbol} order {order_id} for a {trail_pct}% trail")
+
+
+def arm_after_fill(client, symbol, trail_pct, order_id, venue, poll=6, gap=3):
+    """Wait for the entry to fill, THEN arm the exit. Hand off on timeout.
+
+    THE BUG THIS EXISTS TO KILL (found on paper 2026-08-11): submitting the
+    protective order immediately after the entry gets rejected by the broker,
+    because the entry is still working. On a short entry Alpaca returns
+
+        403 - cannot open a long buy while a short sell order is open
+
+    since a buy while a sell is working reads as opening the opposite side. The
+    entry then sits filled and naked. Same race that left VRM naked on live.
+
+    So: poll for the fill first, and if it has not landed by the time we give
+    up, queue it for the durable watcher instead of returning "arm it yourself".
+    Never returns without the position being either armed or queued.
+    """
+    filled = 0
+    for _ in range(poll):
+        time.sleep(gap)
+        try:
+            o = client.get_order(order_id)
+        except Exception:
+            continue
+        st = str(o.get("status"))
+        if st == "filled":
+            filled = int(float(o.get("filled_qty") or 0))
+            break
+        if st in ("canceled", "expired", "rejected", "suspended"):
+            return {"armed": False, "error": f"entry order {st}; nothing to protect"}
+
+    if filled >= 1:
+        res = arm_trail(client, symbol, trail_pct, filled)
+        if res.get("ok"):
+            return {"armed": True, "qty": filled, "trail_percent": float(trail_pct),
+                    "side": res.get("side"), "id": res.get("id")}
+        # "already has a working <side> order" is arm_trail REFUSING TO DOUBLE UP,
+        # which means the position is already guarded. Reporting that as a failure
+        # and queueing it made the watcher retry a no-op every 30s forever and put
+        # a scary "trail did not arm" on a position that was fine. Protected is
+        # protected, whoever placed the order.
+        if "already has a working" in str(res.get("error", "")):
+            return {"armed": True, "qty": filled, "pre_existing": True,
+                    "note": "a working exit order was already on this position"}
+        # Anything else may be transient. Do NOT drop it.
+        _protect_queue_add(order_id, symbol, trail_pct, venue)
+        return {"armed": False, "pending": True, "error": res.get("error"),
+                "note": "handed to the watcher"}
+
+    _protect_queue_add(order_id, symbol, trail_pct, venue)
+    return {"armed": False, "pending": True,
+            "error": f"fill not confirmed in {poll * gap}s - the watcher will arm "
+                     f"the trail as soon as it fills"}
 
 
 def _exit_side(qty):
@@ -219,19 +327,33 @@ def _scoring_state():
             "agent_kind": agent_kind, "min_score": config.RADAR_LLM_MIN_SCORE}
 
 
-_sweep_attempts: dict[str, int] = {}   # symbol -> failed arm attempts
-_sweep_seen: set[str] = set()          # already announced; cleared when it clears
+_sweep_attempts: dict = {}   # (venue, symbol) -> failed arm attempts
+_sweep_seen: set = set()     # (venue, symbol) already announced; cleared when it clears
 
 
 def _protect_worker():
-    """Arms pending exits late, then sweeps for anything naked."""
+    """Arms pending exits late, then sweeps for anything naked. EVERY venue."""
     while True:
+        for venue in _venues():
+            try:
+                _protect_pass(venue)
+            except Exception as e:
+                print(f"[protect/{venue}] worker error: {e}")
+        time.sleep(30)
+
+
+def _protect_pass(venue):
+    """One watcher + sweep pass for a single venue."""
+    client = _venue_client(venue)
+    if True:
         try:
-            client = AlpacaClient()
             with _protect_lock:
                 rows = _protect_load()
             keep = []
             for r in rows:
+                if r.get("venue", LIVE_VENUE) != venue:
+                    keep.append(r)          # another venue's row, leave it alone
+                    continue
                 age = time.time() - float(r.get("added", 0))
                 try:
                     o = client.get_order(r["order_id"])
@@ -240,17 +362,17 @@ def _protect_worker():
                         q = int(float(o.get("filled_qty") or 0))
                         if q >= 1:
                             res = arm_trail(client, r["symbol"], r["trail_pct"], q)
-                            print(f"[protect] late-armed {r['symbol']}: {res}")
+                            print(f"[protect/{venue}] late-armed {r['symbol']}: {res}")
                         continue                      # done either way
                     if st in ("canceled", "expired", "rejected", "suspended"):
-                        print(f"[protect] {r['symbol']} order {st}; dropping")
+                        print(f"[protect/{venue}] {r['symbol']} order {st}; dropping")
                         continue
                 except Exception as e:
-                    print(f"[protect] check failed for {r.get('symbol')}: {e}")
+                    print(f"[protect/{venue}] check failed for {r.get('symbol')}: {e}")
                 if age < 6 * 3600:                    # give up after 6h, not 18s
                     keep.append(r)
                 else:
-                    print(f"[protect] giving up on {r.get('symbol')} after 6h")
+                    print(f"[protect/{venue}] giving up on {r.get('symbol')} after 6h")
             with _protect_lock:
                 if keep != rows:
                     _protect_save(keep)
@@ -259,30 +381,34 @@ def _protect_worker():
             # did nothing about it. Now it arms, because the one thing this app
             # promises is that a position is never left without an exit.
             naked = unprotected_positions(client)
-            live = {u["symbol"] for u in naked}
-            for gone in [s for s in _sweep_seen if s not in live]:
+            open_now = {u["symbol"] for u in naked}
+            # Counters are keyed by (venue, symbol). Keying by symbol alone let a
+            # live position and a paper position in the same ticker share one
+            # attempt budget and one "already announced" flag.
+            for gone in [k for k in list(_sweep_seen)
+                         if k[0] == venue and k[1] not in open_now]:
                 _sweep_seen.discard(gone)        # protected or closed; report it again if it returns
                 _sweep_attempts.pop(gone, None)
             for u in naked:
                 sym = u["symbol"]
+                key = (venue, sym)
                 qty = abs(float(u.get("qty") or 0))
-                first = sym not in _sweep_seen
-                if first:
+                if key not in _sweep_seen:
                     # Say it ONCE per episode. Reprinting five symbols every 30s
                     # buries the one line that matters under its own noise.
-                    _sweep_seen.add(sym)
-                    print(f"[protect] !! UNPROTECTED POSITION: {sym} qty {u['qty']} "
+                    _sweep_seen.add(key)
+                    print(f"[protect/{venue}] !! UNPROTECTED POSITION: {sym} qty {u['qty']} "
                           f"@ {u['avg_entry']} - no working exit order")
                 if not config.SWEEP_AUTO_ARM:
                     continue
-                if _sweep_attempts.get(sym, 0) >= config.SWEEP_MAX_ATTEMPTS:
+                if _sweep_attempts.get(key, 0) >= config.SWEEP_MAX_ATTEMPTS:
                     continue                      # already tried enough, stay quiet
                 if qty < 1:
                     # Alpaca cannot attach a trailing stop to a fractional
                     # position. That is a permanent property of the position, not
                     # a transient failure, so retrying it forever is pointless.
-                    _sweep_attempts[sym] = config.SWEEP_MAX_ATTEMPTS
-                    print(f"[protect] {sym} is FRACTIONAL ({qty:g} shares) - a trailing "
+                    _sweep_attempts[key] = config.SWEEP_MAX_ATTEMPTS
+                    print(f"[protect/{venue}] {sym} is FRACTIONAL ({qty:g} shares) - a trailing "
                           f"stop needs at least 1 whole share, so this position cannot "
                           f"be auto-protected. Close it by hand, or size in whole shares.")
                     continue
@@ -294,16 +420,15 @@ def _protect_worker():
                 # missing exception as success cleared the attempt counter every
                 # pass, so the cap never engaged and the sweep retried forever.
                 if res.get("ok"):
-                    _sweep_attempts.pop(sym, None)
-                    print(f"[protect] sweep-armed {sym} at {config.SWEEP_TRAIL_PCT}%")
+                    _sweep_attempts.pop(key, None)
+                    print(f"[protect/{venue}] sweep-armed {sym} at {config.SWEEP_TRAIL_PCT}%")
                 else:
-                    n = _sweep_attempts.get(sym, 0) + 1
-                    _sweep_attempts[sym] = n
-                    print(f"[protect] sweep could NOT arm {sym} "
+                    n = _sweep_attempts.get(key, 0) + 1
+                    _sweep_attempts[key] = n
+                    print(f"[protect/{venue}] sweep could NOT arm {sym} "
                           f"(attempt {n}/{config.SWEEP_MAX_ATTEMPTS}): {res.get('error')}")
         except Exception as e:
-            print(f"[protect] worker error: {e}")
-        time.sleep(30)
+            print(f"[protect/{venue}] pass error: {e}")
 
 
 threading.Thread(target=_protect_worker, daemon=True).start()
@@ -519,33 +644,126 @@ def api_order():
         db.update_order_result(conn, client_order_id=coid,
                                status=resp.get("status", "accepted"), broker_order_id=resp.get("id"))
         trail = None
-        if exit_trail is not None and side == "buy":
-            filled_qty = 0
-            for _ in range(6):  # market orders in RTH usually fill in seconds
-                time.sleep(3)
-                o = client.get_order(resp.get("id"))
-                if o.get("status") == "filled":
-                    filled_qty = int(float(o.get("filled_qty") or 0))
-                    break
-            if filled_qty >= 1:
-                t = client.submit_trailing_stop_sell(symbol=symbol, qty=filled_qty,
-                                                     trail_percent=exit_trail)
-                trail = {"armed": True, "qty": filled_qty, "trail_percent": exit_trail,
-                         "id": t.get("id")}
-            else:
-                # DO NOT give up here. This used to return "set the stop manually"
-                # and forget, which left VRM (2026-08-06) naked overnight on a slow
-                # fill. Hand it to the watcher, which keeps polling for hours and
-                # arms the stop the moment the fill lands.
-                _protect_queue_add(resp.get("id"), symbol, exit_trail)
-                trail = {"armed": False, "pending": True,
-                         "error": "fill not confirmed in 18s - watcher will arm the "
-                                  "trail as soon as it fills"}
+        if exit_trail is not None:
+            # Was inlined here and duplicated nowhere, which is how the paper
+            # lane ended up shipping without it. One helper, both venues, and
+            # it now covers side='sell' too (a short entry needs a buy to cover;
+            # the old `side == "buy"` guard silently skipped protecting shorts).
+            trail = arm_after_fill(client, symbol, exit_trail, resp.get("id"),
+                                   venue=LIVE_VENUE)
         return jsonify({"ok": True, "symbol": symbol, "side": side, "notional": notional,
                         "qty": qty, "status": resp.get("status"), "id": resp.get("id"),
                         "trail": trail})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:300]}), 502
+
+
+# --- The paper lane -------------------------------------------------------
+# Always paper, regardless of STOCK_ENV. See paper.py for why this exists: the
+# live account cannot short (under the $2,000 Reg T minimum), so without a paper
+# destination every short setup the engine finds produces zero data.
+
+@app.get("/api/paper/status")
+def api_paper_status():
+    """Is the paper account still linked? Proves it with a real account fetch."""
+    import paper
+    return jsonify(paper.check())
+
+
+@app.get("/api/paper/overview")
+def api_paper_overview():
+    """Everything the PAPER page renders. READ-ONLY."""
+    import paper
+    r = paper.overview()
+    return jsonify(r), (200 if r.get("ok") else 502)
+
+
+@app.get("/api/paper/unprotected")
+def api_paper_unprotected():
+    """Paper positions with no working exit. Same check the live desk runs."""
+    import paper
+    try:
+        return jsonify({"positions": unprotected_positions(paper.client())})
+    except Exception as e:
+        return jsonify({"positions": [], "error": str(e)[:200]}), 502
+
+
+@app.post("/api/paper/protect")
+def api_paper_protect():
+    """Arm a trailing stop on an EXISTING paper position.
+
+    The paper lane had no equivalent of /api/protect, so once an entry filled
+    naked there was no way to fix it from anywhere - not the UI, not the copilot,
+    not the sweep. This is the manual layer; the worker is the automatic one.
+    """
+    import paper
+    body = request.get_json(silent=True) or {}
+    symbol = (body.get("symbol") or "").upper().strip()
+    if not symbol:
+        return jsonify({"ok": False, "error": "symbol required"}), 400
+    try:
+        trail = float(body.get("trail_pct") or config.SWEEP_TRAIL_PCT)
+    except Exception:
+        return jsonify({"ok": False, "error": "trail_pct must be a number"}), 400
+    try:
+        res = arm_trail(paper.client(), symbol, trail, body.get("qty"))
+        return jsonify(res), (200 if res.get("ok") else 400)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:300]}), 502
+
+
+@app.post("/api/paper/order")
+def api_paper_order():
+    """Place a trade on PAPER, and guarantee its exit the same way live does.
+
+    No confirm gate: the live endpoint demands confirm == STOCK_ENV because it
+    spends real money. This one cannot - paper.py is hard-wired to the paper host
+    and refuses a key that does not start with PK. Making the human confirm a
+    fake-money order would train exactly the reflex we do not want on live.
+
+    What it DOES share with live is the exit guarantee: entry first, poll for the
+    fill, then arm. Never both in one breath.
+    """
+    import paper
+    body = request.get_json(silent=True) or {}
+    symbol = (body.get("symbol") or "").upper().strip()
+    if not symbol:
+        return jsonify({"ok": False, "error": "symbol required"}), 400
+
+    notional = body.get("notional")
+    cap = config.PAPER_MAX_NOTIONAL
+    capped = None
+    if cap and notional is not None and float(notional) > cap:
+        # Opt-in only, and LOUD. Silently shrinking a paper order corrupts the
+        # exact record the shadow book exists to build, and the operator finds
+        # out weeks later when the P/L does not reconcile.
+        capped = {"requested": float(notional), "capped_to": cap,
+                  "why": "PAPER_MAX_NOTIONAL is set in bot/.env; set it to 0 to size freely"}
+        print(f"[paper] !! SIZE CAPPED {symbol}: ${float(notional):.2f} requested, "
+              f"${cap:.2f} placed (PAPER_MAX_NOTIONAL={cap})")
+        notional = cap
+
+    try:
+        res = paper.place(symbol, body.get("side") or "buy",
+                          notional=notional, qty=body.get("qty"),
+                          trail_pct=body.get("exit_trail_pct"),
+                          note=body.get("note") or "")
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:300]}), 502
+
+    if capped:
+        res["size_capped"] = capped
+
+    trail_pct = body.get("exit_trail_pct")
+    if trail_pct is not None and res.get("order_id"):
+        res["trail"] = arm_after_fill(paper.client(), symbol, float(trail_pct),
+                                      res["order_id"], venue="paper")
+    elif trail_pct is None:
+        # An entry with no requested exit is still the sweep's problem, and the
+        # sweep now covers paper. Say so rather than implying it is protected.
+        res["trail"] = {"armed": False,
+                        "note": "no exit requested; the 30s sweep will flag it"}
+    return jsonify(res)
 
 
 @app.route("/api/broker/orders", methods=["GET"])

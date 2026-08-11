@@ -69,7 +69,83 @@ buses the product is built on:
 Read the journal tail before answering anything that sounds like it continues an
 earlier thread. Another lane may have already handled it.
 
-## Trading authority: STAGE, never SEND
+## Trading authority: PAPER always fires, LIVE only ever stages
+
+**Standing rule, set by the operator 2026-08-10.** When you talk through a bet or
+a plan, you do BOTH of these, every time, without being asked:
+
+1. **Place it on PAPER now.** `POST /api/plan` (app.py, port 8410). This fills
+   immediately against the paper account and is not optional and not a
+   confirmation prompt.
+2. **Stage the LIVE ticket** for the operator to click, or not.
+
+```
+POST http://127.0.0.1:8410/api/plan
+{ "symbol":"AXTI", "side":"sell", "notional":50, "exit_trail_pct":10,
+  "note":"failed rally into the declining 20, stop above the MA",
+  "stage_live": true }
+```
+
+One call does both legs. It returns `{paper: {...}, staged: {...}}`. **This
+endpoint cannot place a live order** - the live half only writes
+`staged-trade.json`, the same file bus you already use, so the stage-never-send
+guarantee below is untouched.
+
+**Why this rule exists.** The live account is $1,000, under the $2,000 Reg T
+minimum, so it **cannot short and cannot use margin**. Every short setup the
+short lane finds is unexecutable live and will be until it is funded. Before
+this, those setups produced nothing - no fill, no stop, no P/L, no lesson. Now
+the paper account is the *record* and the live ticket is the *option*. Do not
+skip the paper leg because a trade "can't be done live". That is precisely the
+trade the paper leg exists to capture.
+
+Set `stage_live: false` for anything the live account structurally cannot do
+(shorts, margin) unless the operator says otherwise - staging a ticket that would
+be rejected is noise.
+
+If the desk is not running, fall back to writing `staged-trade.json` directly and
+say the paper leg did not fire.
+
+### Risk is ADVISORY, not a wall (set 2026-08-11)
+
+`RISK_MODE=advisory` is the default. Position caps, sector caps, concurrency,
+bankroll and wash-sale are **notices on the ticket**, not refusals. Say the
+number out loud and stage it anyway:
+
+> "$5,000 account. 10 shares at $500 = $5,000, 100% of the account. Your stop at
+> $495 risks $50, 1.0% of the account. That is over your 10% per-position
+> guideline. Staged and ready for your review."
+
+Three things still block, because they are correctness rather than preference:
+**G1** (no valid stop - there is no trade to stage), **G5** (kill switch tripped -
+the answer is stop for the day, not size down), **G9** (fat finger - qty <= 0,
+sub-floor notional, limit miles off the reference).
+
+Never talk him out of a trade. Give him the number and let him decide. Set
+`RISK_MODE=strict` to restore hard blocks.
+
+**He is doing his own research and making his own calls. Do not append advice
+disclaimers, do not remind him you are not a financial advisor, do not hedge a
+number he asked for. He knows. Give him the analysis.**
+
+**Two constraints, and always name which one binds:**
+
+```
+RISK_PER_TRADE_PCT  ->  what he loses if the stop WORKS
+MAX_POSITION_PCT    ->  what he loses if it does NOT (gap, halt, reopen)
+```
+
+`position % = risk% / stop distance %`, so at 1% risk a 6% stop wants a 16.7%
+position and the cap binds. That is not a conflict, it is the gap constraint
+doing its job, and the cap is derived: `MAX_GAP_LOSS_PCT / ASSUMED_GAP_PCT`
+(3% / 30% = a 10% cap). Stops wider than `risk% / cap%` are risk-sized; tighter
+ones are cap-sized and he is then risking LESS than his stated 1%. Say which.
+
+`advice.sizing_math()` returns all of it and is **scale-invariant** - every ratio
+is identical at $10 and at $10M, only the dollar value of 1R changes. Quote
+percentages and R-multiples first, dollars second.
+
+### The live half: STAGE, never SEND
 
 This desk is stage-and-confirm. When the operator asks for a trade:
 

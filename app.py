@@ -712,6 +712,9 @@ BOT_GET = {"status", "positions", "orders", "equity", "radar", "reddit",
            "config", "log", "spark", "bars", "news", "unprotected",
            "broker/orders",   # live broker orders; /orders is the local ledger
            "regime",          # market regime gate (read-only, additive)
+           "paper/status",    # is the paper account linked (proves it by fetching)
+           "paper/overview",  # the PAPER tab: shadow book, read-only
+           "paper/unprotected",  # paper positions with no working exit
            "shutdown-check"}  # is anything working that must not be abandoned
 
 
@@ -903,6 +906,162 @@ def _bot_post(path: str, body: dict, timeout=45):
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read(), r.status
+
+
+# ---------------------------------------------------------------------------
+# SCHEDULED SCANS ("cron")
+#
+# Asked for 2026-08-11: "when I ask for 30min scans, I can see where it's
+# logged". The scans were happening with no visible record, so there was no way
+# to tell a scan that found nothing from a scheduler that had quietly died.
+#
+# Deliberately an in-process timer thread, NOT Windows Task Scheduler. A Windows
+# task would fire whether or not the desk is up, and a scan with no desk to write
+# to is a scan that goes nowhere. This lives and dies with the app, which is the
+# honest lifetime, and every run appends to journal.jsonl where the JOURNAL tab
+# already renders it.
+# ---------------------------------------------------------------------------
+SCHEDULE_FILE = WORK / "schedule.json"
+_sched_lock = threading.Lock()
+_sched_state = {"runs": []}          # in-memory ring of recent runs
+
+
+def _sched_load():
+    try:
+        d = json.loads(SCHEDULE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        d = {}
+    return {"enabled": bool(d.get("enabled", False)),
+            "every_min": int(d.get("every_min", 30) or 30),
+            "job": str(d.get("job", "radar")),
+            "market_hours_only": bool(d.get("market_hours_only", True)),
+            "last_run": d.get("last_run"),
+            "last_result": d.get("last_result"),
+            "next_run": d.get("next_run")}
+
+
+def _sched_save(d):
+    try:
+        SCHEDULE_FILE.write_text(json.dumps(d, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[schedule] could not persist: {e}")
+
+
+def _market_hours_now():
+    """Rough RTH check in ET, weekdays 09:30-16:00. Good enough to avoid
+    scanning at 3am; not a holiday calendar and does not pretend to be."""
+    try:
+        from datetime import datetime, timedelta, timezone
+        et = datetime.now(timezone.utc) - timedelta(hours=(4 if 3 <= datetime.now(timezone.utc).month <= 10 else 5))
+        if et.weekday() >= 5:
+            return False
+        mins = et.hour * 60 + et.minute
+        return 570 <= mins <= 960
+    except Exception:
+        return True
+
+
+def _sched_worker():
+    while True:
+        try:
+            s = _sched_load()
+            if s["enabled"]:
+                due = (not s.get("last_run")) or (
+                    time.time() - float(s.get("last_run_ts") or 0) >= s["every_min"] * 60)
+                if due:
+                    skip = s["market_hours_only"] and not _market_hours_now()
+                    if skip:
+                        # Say it, once per cycle. A silent skip is why "is the
+                        # scheduler alive?" was unanswerable.
+                        s["last_result"] = "skipped (outside market hours)"
+                    else:
+                        try:
+                            raw, code = _bot_post(f"run/{s['job']}", {}, timeout=120)
+                            n = len(json.loads(raw) or []) if raw else 0
+                            s["last_result"] = f"ok, {n} result(s)"
+                            _journal_log("scan", f"scheduled {s['job']} scan "
+                                                 f"(every {s['every_min']}m): {s['last_result']}")
+                        except Exception as e:
+                            s["last_result"] = f"FAILED: {str(e)[:140]}"
+                            _journal_log("scan", f"scheduled {s['job']} scan FAILED: {str(e)[:140]}")
+                    s["last_run"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    s["last_run_ts"] = time.time()
+                    s["next_run"] = time.strftime("%Y-%m-%dT%H:%M:%S",
+                                                  time.localtime(time.time() + s["every_min"] * 60))
+                    with _sched_lock:
+                        _sched_save(s)
+                    _sched_state["runs"].insert(0, {"ts": s["last_run"], "job": s["job"],
+                                                    "result": s["last_result"]})
+                    del _sched_state["runs"][20:]
+        except Exception as e:
+            print(f"[schedule] worker error: {e}")
+        time.sleep(20)
+
+
+threading.Thread(target=_sched_worker, daemon=True).start()
+
+
+def _size_advisories(symbol, side, body):
+    """Plain-language size notices for a ticket about to be staged.
+
+    Advisory ONLY. This never returns a veto and nothing downstream treats it as
+    one. It exists so the operator sees the number before he clicks, in the
+    sentence he asked for:
+
+        "$5,000 account. 10 shares at $500 = $5,000, 25% of the account."
+
+    Best-effort by design: if the engine is unreachable or a price is missing it
+    returns fewer notices rather than blocking a trade over its own plumbing.
+    """
+    try:
+        raw, _ = _bot_get("status", timeout=6)
+        st = json.loads(raw)
+    except Exception:
+        return []
+    equity = float(st.get("equity") or 0)
+    if equity <= 0:
+        return []
+
+    notional = body.get("notional")
+    qty = body.get("qty")
+    px = None
+    try:
+        raw, _ = _bot_get(f"bars?symbol={urllib.parse.quote(symbol)}&limit=1", timeout=8)
+        bars = json.loads(raw)
+        rows = bars.get("bars") if isinstance(bars, dict) else bars
+        if rows:
+            px = float(rows[-1].get("c") or 0)     # /api/bot/bars returns DOLLARS
+    except Exception:
+        px = None
+
+    if notional is None and qty and px:
+        notional = float(qty) * px
+    if notional is None:
+        return []
+    notional = float(notional)
+    if qty is None and px:
+        qty = int(notional // px) or None
+
+    pct = notional / equity
+    out = []
+    per_share = f"each share is about ${px:,.2f}, " if px else ""
+    shares = f"{qty} share{'s' if qty != 1 else ''} " if qty else ""
+    out.append({
+        "code": "sizing",
+        "severity": "caution" if pct > 0.10 else "info",
+        "message": (f"${equity:,.2f} account. {shares}{per_share}"
+                    f"${notional:,.2f} committed puts you at {pct:.0%} of the "
+                    f"overall account.").replace("  ", " "),
+    })
+    if side == "sell":
+        out.append({
+            "code": "short_venue",
+            "severity": "info",
+            "message": "Short ticket. The live Alpaca account is under the "
+                       "$2,000 Reg T minimum, so this can only fill on paper or "
+                       "in E*TRADE by hand.",
+        })
+    return out
 
 
 def _read_jsonl(path: Path, limit=200):
@@ -1205,12 +1364,30 @@ class Handler(BaseHTTPRequestHandler):
                 if not s["preview"]:
                     first = next((m for m in allm if str(m.get("ts", ""))[:10] == s["day"]), None)
                     s["preview"] = str((first or {}).get("text", ""))[:60]
+            today = time.strftime("%Y-%m-%d")
+            # Always list TODAY, even before it has any messages. Otherwise the
+            # sidebar has no Today button on a fresh day and there is no way to
+            # get back to the live conversation except reloading.
+            if today not in sess:
+                sess[today] = {"day": today, "n": 0, "last": "", "preview": "new day"}
             days = sorted(sess.values(), key=lambda s: s["day"], reverse=True)
-            if day:
-                inbox = [m for m in inbox if str(m.get("ts", "")).startswith(day)]
-                outbox = [m for m in outbox if str(m.get("ts", "")).startswith(day)]
+
+            # THE BUG (fixed 2026-08-11): an absent `day` meant "today" to the
+            # frontend and "everything, unfiltered" to this handler, so on a new
+            # day the copilot tab opened showing the whole back history. The
+            # default is now today; ask for `?day=all` to get the firehose.
+            want = day or today
+            if want != "all":
+                inbox = [m for m in inbox if str(m.get("ts", "")).startswith(want)]
+                outbox = [m for m in outbox if str(m.get("ts", "")).startswith(want)]
             return self._json({"inbox": inbox, "outbox": outbox, "days": days,
-                               "day": day, "today": time.strftime("%Y-%m-%d")})
+                               "day": day, "resolved_day": want, "today": today})
+
+        if path == "/api/schedule":
+            s = _sched_load()
+            s["runs"] = _sched_state["runs"][:10]
+            s["market_open_now"] = _market_hours_now()
+            return self._json(s)
 
         if path == "/api/watch":
             # one cheap poll target: anything changed?
@@ -1990,6 +2167,161 @@ class Handler(BaseHTTPRequestHandler):
                                         (" - TRAIL NOT ARMED" if tr else "")))
                     else:
                         _journal_log("order", f"FAILED {body.get('side')} {body.get('symbol')}: {str(r.get('error'))[:120]}")
+                except Exception:
+                    pass
+                return self._raw(raw, "application/json", code)
+            except urllib.error.HTTPError as e:
+                return self._raw(e.read(), "application/json", e.code)
+            except Exception as e:
+                return self._json({"ok": False, "error": f"bot unreachable: {str(e)[:120]}"}, 502)
+
+        if parsed.path == "/api/schedule":
+            # Turn scheduled scans on/off and set the interval. Manual by design:
+            # nothing enables itself, and disabling is one click.
+            s = _sched_load()
+            if "enabled" in body:
+                s["enabled"] = bool(body["enabled"])
+            if "every_min" in body:
+                try:
+                    n = int(body["every_min"])
+                except Exception:
+                    return self._json({"ok": False, "error": "every_min must be a number"}, 400)
+                if not (1 <= n <= 1440):
+                    return self._json({"ok": False, "error": "every_min must be 1-1440"}, 400)
+                s["every_min"] = n
+            if "job" in body:
+                job = str(body["job"])
+                if job not in ("radar",):
+                    return self._json({"ok": False, "error": f"unknown job {job!r}"}, 400)
+                s["job"] = job
+            if "market_hours_only" in body:
+                s["market_hours_only"] = bool(body["market_hours_only"])
+            s["next_run"] = (time.strftime("%Y-%m-%dT%H:%M:%S",
+                                           time.localtime(time.time() + s["every_min"] * 60))
+                             if s["enabled"] else None)
+            with _sched_lock:
+                _sched_save(s)
+            _journal_log("note", f"scheduled {s['job']} scan "
+                                 + (f"ENABLED every {s['every_min']}m"
+                                    + (" (market hours only)" if s["market_hours_only"] else "")
+                                    if s["enabled"] else "DISABLED"))
+            s["runs"] = _sched_state["runs"][:10]
+            return self._json({"ok": True, **s})
+
+        if parsed.path == "/api/plan":
+            # THE PLAN ENDPOINT. One call, two destinations:
+            #   1. PAPER executes NOW, unconditionally.
+            #   2. LIVE is written to staged-trade.json and waits for a human.
+            #
+            # This is the rule Dustin asked for on 2026-08-10, and it exists
+            # because the live account is $1,000 - under the $2,000 Reg T
+            # minimum - so it CANNOT short. Every short setup was therefore
+            # unrecordable. Now the paper fill is the record and the live ticket
+            # is optional.
+            #
+            # The asymmetry is deliberate and load-bearing: the leg that always
+            # fires is the one that cannot lose money, and the leg that can lose
+            # money still goes through the same file-bus staging as before. This
+            # endpoint never places a live order. It cannot - it only writes a
+            # file, exactly like the copilot does.
+            symbol = str(body.get("symbol", "")).upper().strip()
+            side = str(body.get("side", "buy")).lower()
+            if not symbol:
+                return self._json({"ok": False, "error": "symbol required"}, 400)
+            if side not in ("buy", "sell"):
+                return self._json({"ok": False, "error": "side must be buy or sell"}, 400)
+
+            out = {"ok": True, "symbol": symbol, "side": side, "paper": None,
+                   "staged": None}
+
+            # --- leg 1: paper, always ---
+            paper_body = {"symbol": symbol, "side": side,
+                          "notional": body.get("notional"), "qty": body.get("qty"),
+                          "exit_trail_pct": body.get("exit_trail_pct"),
+                          "note": body.get("note") or ""}
+            try:
+                raw, code = _bot_post("paper/order", paper_body, timeout=60)
+                out["paper"] = json.loads(raw)
+            except urllib.error.HTTPError as e:
+                try:
+                    out["paper"] = json.loads(e.read())
+                except Exception:
+                    out["paper"] = {"ok": False, "error": f"paper HTTP {e.code}"}
+            except Exception as e:
+                out["paper"] = {"ok": False, "error": f"bot unreachable: {str(e)[:120]}"}
+
+            p = out["paper"] or {}
+            _journal_log("order", (
+                f"PAPER {side} {symbol} "
+                f"{('x' + str(p.get('qty'))) if p.get('qty') else ('$' + str(body.get('notional')))}"
+                f" -> {p.get('status')}"
+                + (f" + trail {(p.get('trail') or {}).get('trail_percent')}%"
+                   if (p.get("trail") or {}).get("armed") else "")
+            ) if p.get("ok") else f"PAPER FAILED {side} {symbol}: {str(p.get('error'))[:140]}")
+
+            # --- leg 2: live, staged only ---
+            if body.get("stage_live", True):
+                ticket = {
+                    "symbol": symbol, "side": side,
+                    "notional": body.get("notional"), "qty": body.get("qty"),
+                    "exit_trail_pct": body.get("exit_trail_pct"),
+                    "why": body.get("note") or body.get("why") or "",
+                    "source": "plan",
+                    "paper_status": p.get("status") if p.get("ok") else "paper failed",
+                    "ts": time.time(), "ttl_s": int(body.get("ttl_s") or 1800),
+                }
+                # Size notices ride ON the ticket. A warning printed in a log the
+                # operator is not reading is not a warning. Advisory, never a
+                # block: the ticket stages either way and he decides.
+                try:
+                    adv = _size_advisories(symbol, side, body)
+                    if adv:
+                        ticket["advisories"] = adv
+                        out["advisories"] = adv
+                        _journal_log("note", f"{symbol}: {adv[0]['message']}")
+                except Exception as e:
+                    ticket["advisories"] = [{"code": "advice_failed", "severity": "info",
+                                             "message": f"could not compute size notice: {str(e)[:120]}"}]
+                try:
+                    STAGED.write_text(json.dumps(ticket, indent=2), encoding="utf-8")
+                    out["staged"] = ticket
+                    _journal_log("note", f"staged LIVE ticket {side} {symbol} "
+                                         f"(awaiting your click, expires in "
+                                         f"{ticket['ttl_s']//60}m)")
+                except Exception as e:
+                    out["staged"] = {"error": str(e)[:200]}
+
+            return self._json(out, 200 if (out["paper"] or {}).get("ok") else 502)
+
+        if parsed.path == "/api/bot/paper/protect":
+            # arm a trailing stop on an EXISTING paper position. The paper twin
+            # of /api/bot/protect, which did not exist, which is why a naked
+            # paper entry could not be fixed from anywhere.
+            try:
+                raw, code = _bot_post("paper/protect", body, timeout=30)
+                try:
+                    r = json.loads(raw)
+                    _journal_log("order", (f"PAPER PROTECT {r.get('symbol')} x{r.get('qty')} "
+                                           f"trail {r.get('trail_percent')}% armed ({r.get('side')})")
+                                 if r.get("ok") else
+                                 f"PAPER PROTECT FAILED {body.get('symbol')}: {str(r.get('error'))[:120]}")
+                except Exception:
+                    pass
+                return self._raw(raw, "application/json", code)
+            except urllib.error.HTTPError as e:
+                return self._raw(e.read(), "application/json", e.code)
+            except Exception as e:
+                return self._json({"ok": False, "error": f"bot unreachable: {str(e)[:120]}"}, 502)
+
+        if parsed.path == "/api/bot/paper/order":
+            # direct paper ticket, no live staging
+            try:
+                raw, code = _bot_post("paper/order", body, timeout=60)
+                try:
+                    r = json.loads(raw)
+                    _journal_log("order", f"PAPER {r.get('side')} {r.get('symbol')} "
+                                          f"-> {r.get('status')}" if r.get("ok")
+                                 else f"PAPER FAILED {body.get('symbol')}: {str(r.get('error'))[:120]}")
                 except Exception:
                     pass
                 return self._raw(raw, "application/json", code)

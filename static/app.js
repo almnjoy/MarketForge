@@ -145,6 +145,8 @@ document.querySelectorAll('#tabs button').forEach((b) => b.onclick = () => {
   if (b.dataset.tab === 'admin') loadAdmin();
   // same for saved pages: read the directory on open, not on a timer
   if (b.dataset.tab === 'saved') loadSavedGrid();
+  // the paper book is a separate broker account - fetch on open, then on demand
+  if (b.dataset.tab === 'paper') loadPaper();
   // A hidden element has no scrollHeight, so every scroll-to-bottom done while
   // the COPILOT tab was display:none silently did nothing and it opened at the
   // top. Scroll AFTER the tab is visible and laid out.
@@ -274,6 +276,124 @@ $('#chartRanges').addEventListener('click', (e) => {
   }
   loadChart();
 });
+
+/* ---------- paper (the shadow book) ----------
+   A SECOND broker account, not a mode switch. The desk can be STOCK_ENV=live and
+   this tab still shows paper, because paper.py holds its own connection pinned to
+   paper-api with the PK key pair.
+
+   Why the tab exists: the live account is under the $2,000 Reg T minimum, so it
+   cannot short. Every short setup the engine finds is unexecutable live. Routing
+   plans here means those setups still produce a fill, a stop and a P/L to learn
+   from instead of scrolling past. */
+async function loadPaper() {
+  const link = $('#paperLink');
+  try {
+    const o = await J('/api/bot/paper/overview');
+    if (!o.ok) throw new Error(o.error || 'paper overview failed');
+
+    link.classList.add('hidden');
+    const short = o.can_short
+      ? `<span class="up">shorting ENABLED</span>`
+      : `<span class="warn">shorting OFF</span> (needs $2,000 equity + margin)`;
+    $('#paperWhy').innerHTML =
+      `This is a separate Alpaca <b>paper</b> account. The desk process is running `
+      + `<b>${esc(o.process_env)}</b>; nothing on this tab touches real money.<br>`
+      + `${short}. Plans placed through the copilot fill <b>here</b> automatically, `
+      + `and the live ticket is only ever <i>staged</i> for you on OVERVIEW.`;
+
+    const longV = o.long_market_value || 0, shortV = Math.abs(o.short_market_value || 0);
+    $('#paperStatRow').innerHTML = [
+      ['Paper equity', fmt$(o.equity), o.status || ''],
+      ['Cash', fmt$(o.cash), ''],
+      ['Buying power', fmt$(o.buying_power), o.account_type || ''],
+      ['Long exposure', fmt$(longV), ''],
+      ['Short exposure', fmt$(shortV), shortV ? 'the lane live cannot run' : 'none open'],
+      ['Unprotected', String((o.unprotected || []).length),
+        (o.unprotected || []).length ? 'no working exit' : 'all guarded',
+        (o.unprotected || []).length ? 'warn' : ''],
+    ].map(([l, v, sub, c]) => `<div class="stat"><div class="l">${l}</div><div class="v ${c || ''}">${v}</div><div class="dim">${sub || ''}</div></div>`).join('');
+
+    // Same red bar as the live desk. A naked paper short teaches the wrong
+    // lesson silently, so it gets the same treatment rather than a log line.
+    if ((o.unprotected || []).length) {
+      link.classList.remove('hidden');
+      // A banner that only names the problem is what let six of these sit. Each
+      // one gets a button. Fractional positions cannot take a trailing stop at
+      // all, so say that instead of offering an action that will always fail.
+      link.innerHTML = 'UNPROTECTED PAPER POSITIONS &mdash; no working exit:<br>'
+        + o.unprotected.map(u => {
+          const frac = Math.abs(u.qty) < 1;
+          return `<span class="nakedrow">${esc(u.symbol)} <span class="dim">(${u.side}, `
+            + `${u.qty}, needs a ${u.needs})</span> `
+            + (frac
+              ? `<span class="warn">FRACTIONAL &mdash; cannot be trailed, close by hand</span>`
+              : `<button class="btn sm" onclick="paperProtect('${esc(u.symbol)}')">Protect</button>`)
+            + `</span>`;
+        }).join('<br>');
+    }
+
+    const pos = o.positions || [];
+    $('#paperPosCount').textContent = `(${pos.length})`;
+    $('#paperPositions').innerHTML = pos.length
+      ? '<table><tr><th>sym</th><th>side</th><th class="r">qty</th><th class="r">entry</th><th class="r">now</th><th class="r">value</th><th class="r">P/L</th></tr>'
+        + pos.map(p => `<tr><td><b>${esc(p.symbol)}</b></td>`
+          + `<td class="${p.side === 'short' ? 'down' : ''}">${p.side}</td>`
+          + `<td class="r">${p.qty}</td><td class="r">${fmt$(p.entry)}</td>`
+          + `<td class="r">${fmt$(p.price)}</td><td class="r">${fmt$(p.value)}</td>`
+          + `<td class="r ${cls(p.pl)}">${fmt$(p.pl)}</td></tr>`).join('') + '</table>'
+      : '<span class="dim">no paper positions</span>';
+
+    const ords = o.orders || [];
+    $('#paperOrders').innerHTML = ords.length
+      ? '<table><tr><th>sym</th><th>side</th><th>type</th><th class="r">qty</th><th>status</th></tr>'
+        + ords.map(x => `<tr><td><b>${esc(x.symbol)}</b></td><td>${esc(x.side)}</td>`
+          + `<td>${x.trail_percent ? 'trail ' + (+x.trail_percent).toFixed(0) + '%' : esc(String(x.type || '-').replace(/_/g, ' '))}</td>`
+          + `<td class="r">${esc(x.qty)}</td><td class="dim">${esc(x.status)}</td></tr>`).join('') + '</table>'
+      : '<span class="dim">no working orders</span>';
+  } catch (e) {
+    // Report the error we ACTUALLY got. The first version of this hard-coded
+    // "check your keys", and when the real fault was app.py's BOT_GET allowlist
+    // rejecting the proxy path, it sent Dustin to inspect a .env that was fine.
+    // An error message that guesses at the cause is worse than no message.
+    const msg = String(e.message || e);
+    const keyish = /ALPACA|key|PK\b|secret/i.test(msg);
+    const proxyish = /not allowed|404/i.test(msg);
+    const unreachable = /unreachable|fetch|network|502/i.test(msg);
+    let hint = '';
+    if (keyish) hint = 'Check ALPACA_KEY_ID / ALPACA_SECRET_KEY in bot/.env (paper keys start with PK).';
+    else if (proxyish) hint = 'The desk is refusing to proxy this path. Add it to BOT_GET in app.py, then restart the desk.';
+    else if (unreachable) hint = 'The bot engine is not answering. Is it running?';
+    else hint = 'Run <code>python bot\\src\\paper.py</code> to test the account directly.';
+    link.classList.remove('hidden');
+    link.innerHTML = 'PAPER TAB ERROR: ' + esc(msg) + '<br><span class="dim">' + hint + '</span>';
+    $('#paperStatRow').innerHTML = '';
+    $('#paperPositions').innerHTML = '<span class="dim">--</span>';
+    $('#paperOrders').innerHTML = '<span class="dim">--</span>';
+  }
+}
+document.addEventListener('click', (e) => {
+  if (e.target && e.target.id === 'paperRefresh') loadPaper();
+});
+
+/* Arm a trailing stop on a naked PAPER position. */
+async function paperProtect(symbol) {
+  const pct = prompt(`Trailing stop for ${symbol} (percent off the best price):`, '4');
+  if (pct === null) return;
+  const n = Number(pct);
+  if (!(n >= 0.5 && n <= 50)) { alert('Trail must be between 0.5 and 50 percent.'); return; }
+  try {
+    const r = await J('/api/bot/paper/protect', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol, trail_pct: n }),
+    });
+    if (!r.ok) throw new Error(r.error || 'protect failed');
+    alert(`${symbol}: ${r.side} trailing stop armed at ${n}% on ${r.qty} shares.`);
+  } catch (err) {
+    alert(`${symbol}: ${err.message}`);
+  }
+  loadPaper();
+}
 
 async function loadOverview() {
   try {
@@ -408,17 +528,113 @@ window.chartTo = (sym) => {
 };
 
 /* ---------- retail (reddit) ---------- */
+/* ---------- scheduled scans ----------
+   In-process timer, not a Windows task: a scan with no desk running has nowhere
+   to write. Every run lands in journal.jsonl, which is the whole point - the ask
+   was "I can see where it's logged". */
+async function loadSchedule() {
+  const d = await J('/api/schedule').catch(() => null);
+  if (!d) return;
+  const on = $('#schedOn'), min = $('#schedMin'), rth = $('#schedRth');
+  if (on) on.checked = !!d.enabled;
+  if (min) min.value = d.every_min || 30;
+  if (rth) rth.checked = d.market_hours_only !== false;
+  const st = $('#schedState');
+  if (st) {
+    st.innerHTML = d.enabled
+      ? `<b class="up">ON</b> · every ${d.every_min}m`
+        + (d.last_run ? ` · last ${esc(String(d.last_run).slice(5, 16).replace('T', ' '))} (${esc(d.last_result || '')})` : ' · no run yet')
+        + (d.market_hours_only && !d.market_open_now ? ' · <b class="warn">market closed, skipping</b>' : '')
+      : '<b class="dim">OFF</b>';
+  }
+  const runs = $('#schedRuns');
+  if (runs) {
+    runs.innerHTML = (d.runs || []).length
+      ? '<table><tr><th>when</th><th>job</th><th>result</th></tr>'
+        + d.runs.map(r => `<tr><td class="mono">${esc(String(r.ts).slice(5, 16).replace('T', ' '))}</td>`
+          + `<td>${esc(r.job)}</td><td class="dim">${esc(r.result)}</td></tr>`).join('')
+        + '</table>'
+      : '<span class="dim">no scheduled runs yet this session</span>';
+  }
+}
+async function saveSchedule() {
+  const body = {
+    enabled: $('#schedOn').checked,
+    every_min: Number($('#schedMin').value) || 30,
+    market_hours_only: $('#schedRth').checked,
+    job: 'radar',
+  };
+  const r = await J('/api/schedule', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .catch((e) => ({ ok: false, error: e.message }));
+  notify(r.ok ? (body.enabled ? `scans every ${body.every_min}m - logged to the journal`
+                              : 'scheduled scans off')
+              : `schedule failed: ${r.error}`, r.ok ? 'ok' : 'err');
+  loadSchedule();
+}
+document.addEventListener('click', (e) => {
+  if (!e.target) return;
+  if (e.target.id === 'schedBtn') { $('#schedBox').classList.toggle('hidden'); loadSchedule(); }
+  if (e.target.id === 'schedSave') saveSchedule();
+  if (e.target.id === 'retailRefresh') loadReddit();
+});
+
+const ago = (s) => s == null ? '' :
+  s < 60 ? `${Math.round(s)}s ago` :
+  s < 3600 ? `${Math.round(s / 60)}m ago` :
+  s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`;
+
 async function loadReddit() {
   try {
     const d = await J('/api/bot/reddit');
-    $('#redditSubs').textContent = (d.subs || []).map(s => 'r/' + s).join(' · ');
-    $('#reddit').innerHTML = (d.trending || []).length ? d.trending.map(t => `<div class="card">
-      <div class="head"><span class="sym">${esc(t.symbol)}</span>
-        ${t.price != null ? `<span class="dim">${fmt$(t.price)}</span>` : ''}
-        <span class="score" style="margin-left:auto;color:var(--accent)">${t.mentions} hot</span></div>
-      ${(t.posts || []).slice(0, 2).map(p => `<a href="${esc(p.url)}" target="_blank">r/${esc(p.sub)} #${p.rank ?? '?'} · ${esc(p.title)}</a>`).join('')}
-      <div class="foot"><button class="btn sm right" onclick="openTicket('${esc(t.symbol)}','buy')">Trade</button>
-        <button class="btn sm" style="margin-left:6px" onclick="chartTo('${esc(t.symbol)}')">Chart</button></div></div>`).join('')
+    const now = Date.now() / 1000;
+
+    // Freshness, per sub. The round-robin refreshes ONE sub per pass, so a
+    // single "updated" time lies: one sub can be an hour stale while another is
+    // seconds old. Mark anything past its cache window.
+    const fetched = d.sub_fetched || {};
+    const win = d.cache_secs || 600;
+    $('#redditSubs').innerHTML = Object.keys(fetched).length
+      ? Object.entries(fetched).map(([s, t]) => {
+          const age = t ? now - t : null;
+          const stale = age == null || age > win;
+          return `<span class="subchip ${stale ? 'stale' : 'fresh'}" `
+            + `title="${age == null ? 'never fetched' : ago(age)}">r/${esc(s)}`
+            + `<b>${age == null ? 'never' : ago(age)}</b></span>`;
+        }).join('')
+      : (d.subs || []).map(s => 'r/' + s).join(' · ');
+    $('#redditUpdated').textContent = d.generated
+      ? `scan ${ago(now - d.generated)}` : '';
+
+    const list = d.trending || [];
+    $('#redditCount').textContent = `(${list.length})`;
+    // Live price, same call the catalyst radar uses, so a buzz name shows what
+    // it has done SINCE it started trending rather than a stale snapshot.
+    const syms = [...new Set(list.map(t => t.symbol))].slice(0, 16).join(',');
+    const spark = syms ? await J(`/api/bot/spark?symbols=${syms}`).catch(() => ({})) : {};
+    const maxW = Math.max(1, ...list.map(t => t.weight || 0));
+
+    $('#reddit').innerHTML = list.length ? list.map((t, i) => {
+      const sp = spark[t.symbol], live = sp?.last;
+      const since = live != null && t.price ? ((live - t.price) / t.price * 100) : null;
+      const heat = Math.round(((t.weight || 0) / maxW) * 100);
+      const subs = [...new Set((t.posts || []).map(p => p.sub))].slice(0, 3);
+      return `<div class="card ${i === 0 ? 'signal' : ''}">
+        <div class="head"><span class="sym">${esc(t.symbol)}</span>
+          ${since != null
+            ? `<span class="pct ${since >= 0 ? 'up' : 'down'} ${pctScale(since)}">${arrow(since)}${since >= 0 ? '+' : ''}${since.toFixed(1)}%</span>`
+            : ''}
+          ${t.price != null ? `<span class="dim">buzz @ ${fmt$(t.price)}</span>` : ''}
+          <span class="score ${heat >= 70 ? 'hi' : heat >= 40 ? 'mid' : ''}">${t.mentions}</span></div>
+        ${live != null ? `<div class="livechip"><span class="p"></span>now ${fmt$(live)}${since != null ? ` <b class="${cls(since)}">${since >= 0 ? '+' : ''}${since.toFixed(1)}% since buzz</b>` : ''}</div>` : ''}
+        <div class="heatbar" title="mention weight ${t.weight}"><i style="width:${heat}%"></i></div>
+        <div class="dim" style="color:var(--accent);font-size:10px;text-transform:uppercase">
+          ${t.mentions} mention${t.mentions === 1 ? '' : 's'} · ${subs.map(s => 'r/' + esc(s)).join(' ')}</div>
+        ${(t.posts || []).slice(0, 2).map(p => `<a href="${esc(p.url)}" target="_blank">r/${esc(p.sub)} #${p.rank ?? '?'} · ${esc(p.title)}</a>`).join('')}
+        <div class="foot"><span class="dim">rank ${i + 1} of ${list.length}</span>
+          <button class="btn sm right" onclick="openTicket('${esc(t.symbol)}','buy')">Trade</button>
+          <button class="btn sm" style="margin-left:6px" onclick="chartTo('${esc(t.symbol)}')">Chart</button></div></div>`;
+    }).join('')
       : '<span class="dim">reddit buzz warming up (round-robin, ~10 min per sub)</span>';
   } catch (e) { $('#reddit').innerHTML = `<span class="dim">reddit error: ${esc(e.message)}</span>`; }
 }
@@ -943,6 +1159,13 @@ async function loadStaged() {
       <span class="right dim">staged ${mins}m ago</span>
     </div>
     ${t.why ? `<div class="stg-why">${esc(t.why)}</div>` : ''}
+    ${(t.advisories || []).map(a => `<div class="stg-adv ${esc(a.severity)}">`
+      + `${a.severity === 'danger' ? '!! ' : a.severity === 'caution' ? '! ' : ''}`
+      + `${esc(a.message)}</div>`).join('')}
+    ${(t.advisories || []).length
+      ? `<div class="dim stg-adv-foot">Notices only. Nothing here blocks the
+         trade &mdash; it is staged and ready for your review.</div>`
+      : ''}
     ${t.expired
       ? `<div class="stg-stale">This was staged ${mins} minutes ago and has expired.
          Prices have moved; ask for a fresh read before acting.</div>`
@@ -1585,6 +1808,16 @@ $('#tkGo').onclick = async () => {
         (r.trail ? (r.trail.armed ? `\n✓ trailing stop ARMED: ${r.trail.trail_percent}% off the high (qty ${r.trail.qty})` : `\n⚠ ${r.trail.error}`) : '');
       notify(`order ${r.status || 'submitted'}: ${tk.side} ${tk.symbol}${r.trail?.armed ? ' + trail armed' : ''}`, 'ok');
       if (r.trail && !r.trail.armed) notify(`trail NOT armed on ${tk.symbol} - set a stop manually`, 'warn');
+      // The staged card used to sit there after the trade was placed, so the
+      // desk showed a live proposal for something already done and you had to
+      // notice and hit Dismiss. If this order IS the staged one, retire it.
+      const st = window.__staged;
+      if (st && String(st.symbol).toUpperCase() === String(tk.symbol).toUpperCase()
+          && String(st.side || 'buy').toLowerCase() === String(tk.side).toLowerCase()) {
+        fetch('/api/staged/clear', { method: 'POST' })
+          .catch(() => {})
+          .finally(() => { window.__staged = null; loadStaged(); });
+      }
       loadOverview();
     } else { el.className = 'tk-result mono err'; el.textContent = '✗ ' + (r.error || 'failed'); notify(`order failed: ${tk.symbol}`, 'err'); }
   } catch (e) { $('#tkResult').className = 'tk-result mono err'; $('#tkResult').textContent = '✗ ' + e.message; }
