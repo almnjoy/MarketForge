@@ -40,6 +40,20 @@ def _positions():
     return c, (c.list_positions() or [])
 
 
+def _working(c):
+    """{symbol: set(sides)} of orders that could CLOSE something."""
+    try:
+        raw = c._req("GET", c.trade_base, "/v2/orders",
+                     params={"status": "open", "limit": 200}) or []
+    except Exception:
+        return {}          # fail closed: unknown means "assume unguarded"
+    out = {}
+    for o in raw:
+        if o.get("symbol"):
+            out.setdefault(o["symbol"], set()).add(str(o.get("side")))
+    return out
+
+
 def status():
     c, pos = _positions()
     acct = c.get_account()
@@ -48,15 +62,39 @@ def status():
     if not pos:
         print("no open paper positions")
         return
+    guarded = _working(c)
+    naked, shorts = [], []
     print(f"\n{'sym':<7}{'qty':>10}{'entry':>10}{'now':>10}{'value':>11}{'P/L':>10}  flag")
     for p in sorted(pos, key=lambda x: x["symbol"]):
         q = float(p["qty"])
         frac = abs(q) - int(abs(q)) > 1e-9
-        flag = "FRACTIONAL - cannot be trailed" if frac else ""
+        # A long is closed by SELLING, a short by BUYING. Getting this backwards
+        # doubles the position instead of failing loudly.
+        need = "sell" if q > 0 else "buy"
+        has_exit = need in guarded.get(p["symbol"], ())
+        flags = []
+        if frac:
+            flags.append("FRACTIONAL - cannot be trailed")
+        if q < 0:
+            flags.append("SHORT")
+            shorts.append(p["symbol"])
+        if not has_exit and not frac:
+            flags.append(f"NO EXIT (needs a {need})")
+            naked.append((p["symbol"], q, need))
         print(f"{p['symbol']:<7}{q:>10g}{p['avg_entry_cents']/100:>10.2f}"
               f"{p['current_price_cents']/100:>10.2f}"
               f"{p['market_value_cents']/100:>11.2f}"
-              f"{p['unrealized_pl_cents']/100:>10.2f}  {flag}")
+              f"{p['unrealized_pl_cents']/100:>10.2f}  {' | '.join(flags)}")
+
+    if naked:
+        print(f"\n!! {len(naked)} position(s) with NO working exit order:")
+        for sym, q, need in naked:
+            extra = ("  <-- SHORT, and a short's downside has no floor"
+                     if q < 0 else "")
+            print(f"   {sym} ({q:g}, needs a {need}){extra}")
+        print("   Arm one with:  python bot/src/paper_fix.py --protect SYM --trail 10")
+        print("   The 30s sweep only runs while the desk is UP. It is not "
+              "watching these right now.")
 
     fires = paper._fires_load()
     if fires:
@@ -122,12 +160,40 @@ def close_fractions(assume_yes=False):
             print(f"  FAILED {p['symbol']}: {str(e)[:140]}")
 
 
+def protect(symbol, trail):
+    """Arm a trailing stop on an existing paper position, correct side.
+
+    Works with the desk DOWN, which is the point: the 30s sweep only runs while
+    app.py is up, so an overnight naked position has nothing watching it.
+    """
+    symbol = symbol.upper()
+    c, pos = _positions()
+    p = next((x for x in pos if x["symbol"] == symbol), None)
+    if not p:
+        sys.exit(f"no paper position in {symbol}")
+    q = float(p["qty"])
+    if abs(q) - int(abs(q)) > 1e-9:
+        sys.exit(f"{symbol} is FRACTIONAL ({q:g}). Alpaca cannot trail it. "
+                 f"Close it instead: --close-fractions")
+    side = "sell" if q > 0 else "buy"
+    if side in _working(c).get(symbol, ()):
+        print(f"{symbol} already has a working {side}. Nothing to do.")
+        return
+    fn = (c.submit_trailing_stop_sell if side == "sell"
+          else c.submit_trailing_stop_buy)
+    t = fn(symbol=symbol, qty=abs(int(q)), trail_percent=float(trail))
+    print(f"{symbol}: {side} trailing stop armed at {trail}% on {abs(int(q))} "
+          f"shares (order {t.get('id')})")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--trim", metavar="SYMBOL")
     ap.add_argument("--to", type=int, help="target share count for --trim")
+    ap.add_argument("--protect", metavar="SYMBOL", help="arm a trailing stop")
+    ap.add_argument("--trail", type=float, default=10.0, help="trail %% for --protect")
     ap.add_argument("--close-fractions", action="store_true")
     ap.add_argument("--yes", action="store_true", help="skip confirmation prompts")
     args = ap.parse_args()
@@ -140,6 +206,8 @@ def main():
         if args.to is None:
             sys.exit("--trim needs --to N")
         trim(args.trim, args.to, args.yes)
+    elif args.protect:
+        protect(args.protect, args.trail)
     elif args.close_fractions:
         close_fractions(args.yes)
     else:
