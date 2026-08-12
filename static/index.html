@@ -123,7 +123,12 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
         <button id="radarRefresh" class="btn sm" style="margin-left:6px">Re-scan</button></div>
       <div id="schedBox" class="scanbox hidden">
         <div class="sched-row">
-          <label><input type="checkbox" id="schedOn"> Run a scan every</label>
+          <label><input type="checkbox" id="schedOn"> Run</label>
+          <select id="schedJob" class="syminput mono" style="width:auto;text-transform:none">
+            <option value="radar">a catalyst scan</option>
+            <option value="changed">a what-changed brief</option>
+          </select>
+          <span class="dim">every</span>
           <input type="number" id="schedMin" min="1" max="1440" step="5" value="30" class="syminput mono" style="width:70px">
           <span class="dim">minutes</span>
           <label style="margin-left:14px"><input type="checkbox" id="schedRth" checked> market hours only</label>

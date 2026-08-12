@@ -687,14 +687,15 @@ window.chartTo = (sym) => {
 async function loadSchedule() {
   const d = await J('/api/schedule').catch(() => null);
   if (!d) return;
-  const on = $('#schedOn'), min = $('#schedMin'), rth = $('#schedRth');
+  const on = $('#schedOn'), min = $('#schedMin'), rth = $('#schedRth'), job = $('#schedJob');
   if (on) on.checked = !!d.enabled;
   if (min) min.value = d.every_min || 30;
   if (rth) rth.checked = d.market_hours_only !== false;
+  if (job) job.value = d.job || 'radar';
   const st = $('#schedState');
   if (st) {
     st.innerHTML = d.enabled
-      ? `<b class="up">ON</b> · every ${d.every_min}m`
+      ? `<b class="up">ON</b> · ${esc(d.job || 'radar')} every ${d.every_min}m`
         + (d.last_run ? ` · last ${esc(String(d.last_run).slice(5, 16).replace('T', ' '))} (${esc(d.last_result || '')})` : ' · no run yet')
         + (d.market_hours_only && !d.market_open_now ? ' · <b class="warn">market closed, skipping</b>' : '')
       : '<b class="dim">OFF</b>';
@@ -714,13 +715,14 @@ async function saveSchedule() {
     enabled: $('#schedOn').checked,
     every_min: Number($('#schedMin').value) || 30,
     market_hours_only: $('#schedRth').checked,
-    job: 'radar',
+    // The "changed" job existed with no way to pick it - built and unreachable.
+    job: ($('#schedJob') || {}).value || 'radar',
   };
   const r = await J('/api/schedule', { method: 'POST',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     .catch((e) => ({ ok: false, error: e.message }));
-  notify(r.ok ? (body.enabled ? `scans every ${body.every_min}m - logged to the journal`
-                              : 'scheduled scans off')
+  notify(r.ok ? (body.enabled ? `${body.job} every ${body.every_min}m - logged to the journal`
+                              : 'scheduled runs off')
               : `schedule failed: ${r.error}`, r.ok ? 'ok' : 'err');
   loadSchedule();
 }

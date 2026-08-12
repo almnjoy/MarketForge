@@ -988,9 +988,20 @@ def _sched_worker():
                     else:
                         try:
                             raw, code = _bot_post(f"run/{s['job']}", {}, timeout=120)
-                            n = len(json.loads(raw) or []) if raw else 0
-                            s["last_result"] = f"ok, {n} result(s)"
-                            _journal_log("scan", f"scheduled {s['job']} scan "
+                            # Jobs return different shapes: the radar returns a
+                            # LIST of alerts, the change-brief returns a DICT.
+                            # len() on the dict would have reported "5 result(s)"
+                            # meaning five keys, which is a number that looks
+                            # like information and is not.
+                            out = json.loads(raw) if raw else None
+                            if isinstance(out, list):
+                                s["last_result"] = f"ok, {len(out)} alert(s)"
+                            elif isinstance(out, dict) and "quiet" in out:
+                                s["last_result"] = ("ok, nothing changed" if out.get("quiet")
+                                                    else f"ok, {len(out.get('changes') or [])} change(s)")
+                            else:
+                                s["last_result"] = "ok"
+                            _journal_log("scan", f"scheduled {s['job']} run "
                                                  f"(every {s['every_min']}m): {s['last_result']}")
                         except Exception as e:
                             s["last_result"] = f"FAILED: {str(e)[:140]}"
