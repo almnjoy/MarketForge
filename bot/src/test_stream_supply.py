@@ -63,30 +63,64 @@ def test_symbol_budget_is_the_free_plan_cap():
     assert stream.MAX_SYMBOLS == 30
 
 
+def _seed_alerts(n):
+    """Put n alerts in the REAL store the radar uses.
+
+    REGRESSION: these tests used to write data/radar.json, which does not exist
+    and never did - radar.py calls db.record_alert(). So the tests passed against
+    a file the production path never reads, while the live tap silently fell back
+    to 5 symbols. A fixture that invents its own data source proves nothing.
+    """
+    import db
+    conn = db.connect()
+    db.init_db(conn)
+    for i in range(n):
+        db.record_alert(conn, symbol=f"RAD{i}", kind="gainer", pct=10.0,
+                        price_cents=1000, score=90 - i)
+    return conn
+
+
 def test_positions_are_never_evicted_by_radar():
     """Held names are the highest-value subscriptions. They go first and a long
     radar must not push them past the 30 cap."""
     class C:
         def list_positions(self):
             return [{"symbol": f"POS{i}"} for i in range(5)]
-    (config.DATA_DIR).mkdir(parents=True, exist_ok=True)
-    (config.DATA_DIR / "radar.json").write_text(json.dumps(
-        [{"symbol": f"RAD{i}", "score": 90 - i} for i in range(60)]))
+    _seed_alerts(60)
     syms = stream.default_symbols(C())
-    assert len(syms) == 30
+    assert len(syms) == 30, len(syms)
     for i in range(5):
         assert f"POS{i}" in syms, syms[:8]
     assert syms[:5] == [f"POS{i}" for i in range(5)]
+    # and the budget actually got spent on radar names, not left idle
+    assert any(s.startswith("RAD") for s in syms), syms
 
 
 def test_indices_are_requested():
     class C:
         def list_positions(self):
             return []
-    (config.DATA_DIR / "radar.json").write_text("[]")
     syms = stream.default_symbols(C())
     for s in ("SPY", "QQQ", "IWM"):
-        assert s in syms
+        assert s in syms, syms
+
+
+def test_a_missing_alert_store_still_gives_indices():
+    """The failure that hid the bug: an unreadable source must not silently
+    produce a 5-symbol subscription that looks like success."""
+    import db
+    orig = db.recent_alerts
+    db.recent_alerts = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    try:
+        class C:
+            def list_positions(self):
+                return [{"symbol": "SMCI"}]
+        syms = stream.default_symbols(C())
+        assert syms[0] == "SMCI"
+        for s in ("SPY", "QQQ", "IWM"):
+            assert s in syms, syms
+    finally:
+        db.recent_alerts = orig
 
 
 # --- fundamentals -----------------------------------------------------------
@@ -98,17 +132,30 @@ def test_supply_class_buckets():
     assert fundamentals.supply_class(None) == "unknown"
 
 
-def test_annotate_degrades_to_unknown_not_an_exception():
-    """A scan must never die because a government website is down."""
-    orig = fundamentals.shares_outstanding
+def test_annotate_degrades_gracefully_not_by_exception():
+    """A scan must never die because a government website is down.
+
+    Two distinct no-data cases, and conflating them threw away a real signal:
+      not_a_filer = not in SEC's company map at all -> almost certainly an
+                    ETF/ETP. CWVX, NBIL, CRWG, SMCL and NBIG all land here, and
+                    that is WHY every card read "unknown" on 2026-08-12.
+      unknown     = it IS a filer, but the share count did not come back.
+    """
+    o_shares, o_cik = fundamentals.shares_outstanding, fundamentals.cik_for
     fundamentals.shares_outstanding = lambda *a, **k: None
     try:
-        a = fundamentals.annotate("NOPE")
-        assert a["supply_class"] == "unknown"
+        fundamentals.cik_for = lambda s: None            # not in the SEC map
+        a = fundamentals.annotate("CWVX")
+        assert a["supply_class"] == "not_a_filer", a
         assert a["shares_outstanding"] is None
-        assert "no SEC share count" in a["note"]
+        assert "ETF/ETP" in a["note"], a["note"]
+
+        fundamentals.cik_for = lambda s: "0000320193"    # a real filer
+        b = fundamentals.annotate("AAPL")
+        assert b["supply_class"] == "unknown", b
+        assert "no share count retrieved" in b["note"], b["note"]
     finally:
-        fundamentals.shares_outstanding = orig
+        fundamentals.shares_outstanding, fundamentals.cik_for = o_shares, o_cik
 
 
 def test_annotation_says_outstanding_not_float():

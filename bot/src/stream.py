@@ -133,12 +133,24 @@ def default_symbols(client=None):
                 add(p.get("symbol"))
         except Exception:
             pass
+    # THE RADAR LIVES IN SQLITE, NOT A JSON FILE.
+    # This originally read data/radar.json, which does not exist and never did -
+    # radar.py calls db.record_alert(). The read failed, the except swallowed it,
+    # and the tap silently subscribed to 5 symbols instead of 30 while looking
+    # like it worked. Guessing at a filename instead of checking is what caused
+    # it; the empty `except` is what hid it.
     try:
-        radar = json.loads((config.DATA_DIR / "radar.json").read_text(encoding="utf-8"))
-        for r in sorted(radar, key=lambda x: -(x.get("score") or 0)):
-            add(r.get("symbol"))
-    except Exception:
-        pass
+        import db
+        conn = db.connect()
+        db.init_db(conn)
+        rows = db.recent_alerts(conn, limit=60) or []
+        for r in sorted(rows, key=lambda x: -((x["score"] if "score" in x.keys()
+                                               else 0) or 0)):
+            add(r["symbol"])
+    except Exception as e:
+        # Say it. A silent fallback to 5 symbols is the bug this comment is about.
+        print(f"[stream] could not read recent alerts ({str(e)[:90]}); "
+              f"subscribing to positions and indices only")
     for s in ("SPY", "QQQ", "IWM"):
         add(s)
     return syms

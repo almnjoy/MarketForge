@@ -621,3 +621,6 @@ body.has-reader { overflow: hidden; }
 .supply.small { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 .supply.mega, .supply.large { opacity: .7; }
 .supply.unknown { opacity: .55; font-style: italic; }
+.supply.notafiler { color: var(--warn, var(--loss));
+  border-color: color-mix(in srgb, var(--warn, var(--loss)) 45%, transparent);
+  background: color-mix(in srgb, var(--warn, var(--loss)) 10%, transparent); }

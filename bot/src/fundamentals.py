@@ -157,12 +157,28 @@ def supply_class(shares):
 
 
 def annotate(symbol):
-    """Everything the scan wants about supply, in one call. Always a dict."""
+    """Everything the scan wants about supply, in one call. Always a dict.
+
+    "Not in the SEC company map" is not a failure, it is a FINDING. Operating
+    companies file; ETFs and ETPs mostly do not appear in company_tickers.json.
+    So a symbol that is absent is very likely a fund or a leveraged product
+    rather than a stock - which is exactly what a +45% "mover" often turns out
+    to be. Saying "unknown" for both cases threw that signal away.
+    """
     rec = shares_outstanding(symbol)
     if not rec:
+        listed = bool(cik_for(symbol))
+        if not listed:
+            return {"shares_outstanding": None, "supply_class": "not_a_filer",
+                    "shares_as_of": None,
+                    "note": ("no SEC company filing for this ticker. Usually an "
+                             "ETF/ETP (incl. leveraged single-stock funds), a "
+                             "foreign issuer, or a very new listing. It is a "
+                             "product, not a company, so 'float' does not apply.")}
         return {"shares_outstanding": None, "supply_class": "unknown",
                 "shares_as_of": None,
-                "note": "no SEC share count (foreign issuer, ETF, or not filed)"}
+                "note": "SEC filer, but no share count retrieved (lookup failed "
+                        "or the concept is not filed)"}
     return {
         "shares_outstanding": rec["shares"],
         "shares_millions": round(rec["shares"] / 1e6, 1),

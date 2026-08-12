@@ -506,10 +506,18 @@ const SUPPLY_HINT = {
   mid: 'moderate supply',
   large: 'big supply - a headline moves this less',
   mega: 'enormous supply - a headline is a rounding error',
-  unknown: 'no SEC share count (ETF, foreign issuer, or not filed)',
+  not_a_filer: 'No SEC company filing. Usually an ETF or ETP, including '
+    + 'leveraged single-stock funds. This is a PRODUCT tracking something else, '
+    + 'not a company - so the move you are looking at may be 2x or 3x someone '
+    + 'else\'s news, with decay and an expense ratio attached.',
+  unknown: 'SEC filer, but no share count came back (lookup failed)',
 };
 function supplyChip(r) {
   const c = r.supply_class || 'unknown';
+  if (c === 'not_a_filer') {
+    return `<div class="supply notafiler" title="${esc(SUPPLY_HINT.not_a_filer)}">`
+      + `<b>ETF / ETP?</b><span class="dim"> not an SEC filer</span></div>`;
+  }
   if (c === 'unknown' && r.shares_millions == null) {
     return `<div class="supply unknown" title="${esc(SUPPLY_HINT.unknown)}">supply: unknown</div>`;
   }
