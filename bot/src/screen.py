@@ -42,7 +42,7 @@ def screen_symbol(symbol, client, cfg=config):
         return {"symbol": symbol, "action": "hold", "reason": "below_liquidity_floor"}
 
     sig = signals.signal(bars, cfg)
-    return {
+    out = {
         "symbol": symbol,
         "sector": sector_for(symbol),
         "action": sig["action"],
@@ -52,6 +52,17 @@ def screen_symbol(symbol, client, cfg=config):
         "reason": sig["reason"],
         "last_bar": bars[-1]["t"],
     }
+    # Supply annotation. Only for names that actually triggered, so a full
+    # universe scan does not hammer SEC for rows nobody will read. Never gates:
+    # a missing share count annotates as "unknown" and the setup stands.
+    if out["action"] == "buy" and getattr(cfg, "ANNOTATE_SUPPLY", True):
+        try:
+            import fundamentals
+            out.update(fundamentals.annotate(symbol))
+        except Exception as e:
+            out["supply_class"] = "unknown"
+            out["note"] = f"supply lookup failed: {str(e)[:80]}"
+    return out
 
 
 def main():

@@ -86,6 +86,22 @@ def screen_symbol(symbol, client, cfg=config, check_borrow=True):
         "last_bar": bars[-1]["t"],
     }
 
+    # Supply matters MORE on the short side: a squeeze is a small-supply event,
+    # and shorting a microcap into a catalyst is how accounts die. Annotation
+    # only - it never blocks, but "micro" on a short ticket should stop you.
+    if out["action"] == "short" and getattr(cfg, "ANNOTATE_SUPPLY", True):
+        try:
+            import fundamentals
+            out.update(fundamentals.annotate(symbol))
+            if out.get("supply_class") == "micro":
+                out["squeeze_warning"] = (
+                    f"{out.get('shares_millions')}M shares outstanding. Small "
+                    f"supply is squeeze fuel; a short here can move against you "
+                    f"faster than a stop can fill.")
+        except Exception as e:
+            out["supply_class"] = "unknown"
+            out["note"] = f"supply lookup failed: {str(e)[:80]}"
+
     # Only pay for the borrow lookup on names that actually triggered.
     if out["action"] == "short" and check_borrow:
         ok, why = _shortable(client, symbol)

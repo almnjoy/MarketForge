@@ -25,6 +25,7 @@ No Docker. No database. No Node.js. No cloud account. Nothing phones home.
 | **Discord webhook** | Radar alerts pushed to your phone | `RADAR_DISCORD_WEBHOOK` in `bot/.env`. |
 | **FRED API key** | Richer macro context in the Market Brief | Free from the St. Louis Fed. `FRED_API_KEY` in `bot/.env`. |
 
+| **websocket-client** | The **live price tap** (`bot/src/stream.py`). Alpaca's free plan cannot return the latest 15 minutes over REST, but its websocket is real time. This subscribes to 30 symbols and writes `data/live-prices.json`. Without it the desk runs exactly as before, on delayed REST. | `pip install websocket-client` |
 ## Feature to dependency map
 
 | You want... | You need |

@@ -155,6 +155,14 @@ SHORT_MA_TAG_TOLERANCE = float(_get("SHORT_MA_TAG_TOLERANCE", 0.01))  # how clos
 SHORT_STOP_ATR_BUFFER = float(_get("SHORT_STOP_ATR_BUFFER", 0.25))    # stop = max(high, MA) + this*ATR
 SHORT_MIN_PRICE_CENTS = int(_get("SHORT_MIN_PRICE_CENTS", 500))       # never short sub-$5
 
+# --- Supply annotation (SEC EDGAR, see fundamentals.py) --------------------
+# A catalyst is DEMAND; the share count is SUPPLY. The same headline on a 14M
+# share company and a 24,000M share company are not the same event.
+# NOTE: SEC gives shares OUTSTANDING, not free float. Annotation only, never a
+# gate, and it degrades to "unknown" if EDGAR is unreachable.
+ANNOTATE_SUPPLY = (_get("ANNOTATE_SUPPLY", "true") or "true").lower() == "true"
+SEC_USER_AGENT = _get("SEC_USER_AGENT", "")   # SEC asks for a real contact string
+
 # --- Sizing / risk gates ---------------------------------------------------
 # Primary sizing is RISK-BASED (fixed-fractional off stop distance), NOT Kelly.
 # Kelly is only an optional cap (edge in equities is dubious). See risk.py.
