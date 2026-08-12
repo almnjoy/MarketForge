@@ -79,6 +79,15 @@ class AlpacaClient:
             "raw": a,
         }
 
+    def get_asset(self, symbol) -> dict:
+        """Asset metadata. The `name` is the tell for a derivative wrapper:
+        "GraniteShares 2x Long CRWV Daily ETF" says everything the symbol does
+        not. Returns {} on any failure so callers never have to guard it."""
+        try:
+            return self._req("GET", self.trade_base, f"/v2/assets/{symbol}") or {}
+        except Exception:
+            return {}
+
     def list_positions(self) -> list:
         rows = self._req("GET", self.trade_base, "/v2/positions") or []
         out = []

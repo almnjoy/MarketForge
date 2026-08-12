@@ -41,7 +41,12 @@ def _positions():
 
 
 def _working(c):
-    """{symbol: set(sides)} of orders that could CLOSE something."""
+    """{symbol: {side: qty_covered}} of orders that could CLOSE something.
+
+    Quantities, not sides. A trailing stop for 29 shares of a 58-share position
+    is not protection for 58, and reporting it as such is how 29 shares end up
+    uncovered and invisible.
+    """
     try:
         raw = c._req("GET", c.trade_base, "/v2/orders",
                      params={"status": "open", "limit": 200}) or []
@@ -49,8 +54,15 @@ def _working(c):
         return {}          # fail closed: unknown means "assume unguarded"
     out = {}
     for o in raw:
-        if o.get("symbol"):
-            out.setdefault(o["symbol"], set()).add(str(o.get("side")))
+        sym = o.get("symbol")
+        if not sym:
+            continue
+        try:
+            q = abs(float(o.get("qty") or 0)) - abs(float(o.get("filled_qty") or 0))
+        except Exception:
+            q = 0.0
+        out.setdefault(sym, {}).setdefault(str(o.get("side")), 0.0)
+        out[sym][str(o.get("side"))] += max(0.0, q)
     return out
 
 
@@ -71,7 +83,9 @@ def status():
         # A long is closed by SELLING, a short by BUYING. Getting this backwards
         # doubles the position instead of failing loudly.
         need = "sell" if q > 0 else "buy"
-        has_exit = need in guarded.get(p["symbol"], ())
+        size = abs(q)
+        covered = float(guarded.get(p["symbol"], {}).get(need, 0.0))
+        has_exit = covered + 1e-6 >= size
         flags = []
         if frac:
             flags.append("FRACTIONAL - cannot be trailed")
@@ -79,8 +93,9 @@ def status():
             flags.append("SHORT")
             shorts.append(p["symbol"])
         if not has_exit and not frac:
-            flags.append(f"NO EXIT (needs a {need})")
-            naked.append((p["symbol"], q, need))
+            flags.append(f"{'PARTIAL' if covered else 'NO'} EXIT "
+                         f"({covered:g}/{size:g} covered, needs a {need})")
+            naked.append((p["symbol"], q, need, covered, size))
         print(f"{p['symbol']:<7}{q:>10g}{p['avg_entry_cents']/100:>10.2f}"
               f"{p['current_price_cents']/100:>10.2f}"
               f"{p['market_value_cents']/100:>11.2f}"
@@ -88,10 +103,12 @@ def status():
 
     if naked:
         print(f"\n!! {len(naked)} position(s) with NO working exit order:")
-        for sym, q, need in naked:
+        for sym, q, need, covered, size in naked:
             extra = ("  <-- SHORT, and a short's downside has no floor"
                      if q < 0 else "")
-            print(f"   {sym} ({q:g}, needs a {need}){extra}")
+            gap = (f"{size - covered:g} of {size:g} uncovered"
+                   if covered else f"{size:g} uncovered")
+            print(f"   {sym} ({gap}, needs a {need}){extra}")
         print("   Arm one with:  python bot/src/paper_fix.py --protect SYM --trail 10")
         print("   The 30s sweep only runs while the desk is UP. It is not "
               "watching these right now.")
@@ -176,14 +193,22 @@ def protect(symbol, trail):
         sys.exit(f"{symbol} is FRACTIONAL ({q:g}). Alpaca cannot trail it. "
                  f"Close it instead: --close-fractions")
     side = "sell" if q > 0 else "buy"
-    if side in _working(c).get(symbol, ()):
-        print(f"{symbol} already has a working {side}. Nothing to do.")
+    size = abs(q)
+    covered = float(_working(c).get(symbol, {}).get(side, 0.0))
+    if covered + 1e-6 >= size:
+        print(f"{symbol} already fully covered ({covered:g}/{size:g}). Nothing to do.")
+        return
+    need_qty = int(size - covered)      # top up ONLY the uncovered remainder
+    if need_qty < 1:
+        print(f"{symbol}: {size - covered:g} uncovered is under one whole share; "
+              f"a trailing stop cannot cover it. Close by hand.")
         return
     fn = (c.submit_trailing_stop_sell if side == "sell"
           else c.submit_trailing_stop_buy)
-    t = fn(symbol=symbol, qty=abs(int(q)), trail_percent=float(trail))
-    print(f"{symbol}: {side} trailing stop armed at {trail}% on {abs(int(q))} "
-          f"shares (order {t.get('id')})")
+    t = fn(symbol=symbol, qty=need_qty, trail_percent=float(trail))
+    print(f"{symbol}: {side} trailing stop armed at {trail}% on {need_qty} "
+          f"share(s){' (topping up ' + str(covered) + ' already covered)' if covered else ''} "
+          f"(order {t.get('id')})")
 
 
 def main():

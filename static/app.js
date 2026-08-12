@@ -766,8 +766,19 @@ async function loadReddit() {
     const spark = syms ? await J(`/api/bot/spark?symbols=${syms}`).catch(() => ({})) : {};
     const maxW = Math.max(1, ...list.map(t => t.weight || 0));
 
+    // "% since buzz" was +0.0% on EVERY card, always. Both numbers come from the
+    // same delayed REST source moments apart: reddit.py stamps `price` from
+    // get_latest_price(), and /api/spark's `last` is the same call. On the free
+    // plan that value cannot move inside the 120s payload cache, so the delta is
+    // structurally zero and the chip was decoration pretending to be data.
+    // Only show it when the two prices came from DIFFERENT sources - i.e. when
+    // the live tap has a fresh print for that symbol.
+    const tap = await J('/api/live').catch(() => null);
+    const livePrices = (tap && tap.prices) || {};
+
     $('#reddit').innerHTML = list.length ? list.map((t, i) => {
-      const sp = spark[t.symbol], live = sp?.last;
+      const tapped = livePrices[t.symbol];
+      const live = (tapped && tapped.fresh) ? tapped.price : null;
       const since = live != null && t.price ? ((live - t.price) / t.price * 100) : null;
       const heat = Math.round(((t.weight || 0) / maxW) * 100);
       const subs = [...new Set((t.posts || []).map(p => p.sub))].slice(0, 3);
@@ -778,7 +789,9 @@ async function loadReddit() {
             : ''}
           ${t.price != null ? `<span class="dim">buzz @ ${fmt$(t.price)}</span>` : ''}
           <span class="score ${heat >= 70 ? 'hi' : heat >= 40 ? 'mid' : ''}">${t.mentions}</span></div>
-        ${live != null ? `<div class="livechip"><span class="p"></span>now ${fmt$(live)}${since != null ? ` <b class="${cls(since)}">${since >= 0 ? '+' : ''}${since.toFixed(1)}% since buzz</b>` : ''}</div>` : ''}
+        ${live != null
+          ? `<div class="livechip"><span class="p"></span>now ${fmt$(live)}${since != null ? ` <b class="${cls(since)}">${since >= 0 ? '+' : ''}${since.toFixed(1)}% since buzz</b>` : ''}</div>`
+          : `<div class="livechip dim" title="No fresh print in the live tap. The buzz price and any 'now' price would both come from the same 15-minute-delayed call, so a % between them is always 0 and means nothing."><span class="p off"></span>no live print &mdash; delayed only</div>`}
         <div class="heatbar" title="mention weight ${t.weight}"><i style="width:${heat}%"></i></div>
         <div class="dim" style="color:var(--accent);font-size:10px;text-transform:uppercase">
           ${t.mentions} mention${t.mentions === 1 ? '' : 's'} · ${subs.map(s => 'r/' + esc(s)).join(' ')}</div>

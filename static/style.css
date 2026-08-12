@@ -649,3 +649,4 @@ nav.subtabs button.on { color: var(--accent); border-color: var(--accent);
 /* Scoring log: rejects are dimmed but present - that is the whole point */
 tr.log-skipped td { opacity: .62; }
 tr.log-alerted td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.livechip .p.off { background: var(--dim); box-shadow: none; animation: none; }

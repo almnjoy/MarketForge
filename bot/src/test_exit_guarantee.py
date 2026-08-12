@@ -16,47 +16,12 @@ Run: python bot/src/test_exit_guarantee.py
 """
 from __future__ import annotations
 
-import sys
 import types
 
 
-def _stub_flask():
-    """Make `import api` work without Flask installed.
+from testkit import stub_flask_if_missing
 
-    The docstring above says "no Flask" and it was not true: these tests import
-    api.py, which imports Flask at module scope, so on any box without it all 11
-    failed with ModuleNotFoundError (found on devzone 2026-08-11 during a push
-    preflight). The exit guarantee is the most important thing in this repo to be
-    able to verify anywhere, so it must not need a web framework to run.
-
-    Only the handful of Flask names api.py touches at import time are stubbed,
-    and only when the real thing is absent.
-    """
-    try:
-        import flask  # noqa: F401
-        return
-    except ImportError:
-        pass
-
-    class _App:
-        def __init__(self, *a, **k):
-            pass
-
-        def _dec(self, *a, **k):
-            return lambda fn: fn
-
-        # every decorator api.py uses at import time
-        route = get = post = after_request = before_request = _dec
-
-    mod = types.ModuleType("flask")
-    mod.Flask = _App
-    mod.request = types.SimpleNamespace(
-        get_json=lambda *a, **k: {}, args={}, headers={}, method="GET", path="/")
-    mod.jsonify = lambda *a, **k: (a[0] if len(a) == 1 else k)
-    sys.modules["flask"] = mod
-
-
-_stub_flask()
+stub_flask_if_missing()   # api.py imports Flask at module scope
 
 
 class FakeBroker:
@@ -67,18 +32,18 @@ class FakeBroker:
         self.fill_after = fill_after      # polls before the entry reports filled
         self.polls = 0
         self.orders = {}                  # id -> dict
-        self.working = {}                 # symbol -> set(sides)
+        self.working = {}                 # symbol -> {side: qty}
         self.positions = []
         self.submitted = []               # every order, in order, for assertions
         self._n = 0
 
     # --- the rule that broke us -------------------------------------------
     def _guard(self, symbol, side):
-        w = self.working.get(symbol, set())
-        if side == "buy" and "sell" in w:
+        w = self.working.get(symbol, {})
+        if side == "buy" and w.get("sell"):
             raise RuntimeError("403 - cannot open a long buy while a short sell "
                                "order is open")
-        if side == "sell" and "buy" in w:
+        if side == "sell" and w.get("buy"):
             raise RuntimeError("403 - cannot open a short sell while a long buy "
                                "order is open")
 
@@ -89,7 +54,7 @@ class FakeBroker:
         oid = f"o{self._n}"
         self.orders[oid] = {"id": oid, "symbol": symbol, "side": side,
                             "status": "new", "filled_qty": 0, "qty": qty}
-        self.working.setdefault(symbol, set()).add(side)
+        self.working.setdefault(symbol, {})[side] = abs(float(qty or 1))
         self.submitted.append(("entry", symbol, side))
         return {"id": oid, "status": "accepted"}
 
@@ -101,7 +66,7 @@ class FakeBroker:
             o["filled_qty"] = o["qty"] or 1
             # A filled entry is no longer WORKING - this is the state change the
             # old code never waited for.
-            self.working.get(o["symbol"], set()).discard(o["side"])
+            self.working.get(o["symbol"], {}).pop(o["side"], None)
             q = float(o["filled_qty"]) * (1 if o["side"] == "buy" else -1)
             self.positions.append({"symbol": o["symbol"], "qty": q,
                                    "avg_entry_cents": 1000,
@@ -115,14 +80,20 @@ class FakeBroker:
 
     def _req(self, method, base, path, params=None, json=None):
         if path == "/v2/orders":
-            return [{"symbol": s, "side": sd}
-                    for s, sides in self.working.items() for sd in sides]
+            # Quantities, not just sides. This fixture used to return
+            # {symbol, side} only, which encoded the OLD model - "does an exit
+            # exist" - and so it kept passing after the code moved to "does the
+            # exit COVER the position". A fixture that models the bug's
+            # assumption cannot catch the bug.
+            return [{"symbol": s, "side": sd, "qty": str(q), "filled_qty": "0"}
+                    for s, sides in self.working.items()
+                    for sd, q in sides.items()]
         return {}
 
     def _trail(self, symbol, qty, side):
         self._guard(symbol, side)
         self._n += 1
-        self.working.setdefault(symbol, set()).add(side)
+        self.working.setdefault(symbol, {})[side] = abs(float(qty or 1))
         self.submitted.append(("trail", symbol, side))
         return {"id": f"t{self._n}"}
 
@@ -216,7 +187,7 @@ def test_working_buy_counts_as_protection_for_a_short():
     b.positions = [{"symbol": "AXTI", "qty": -10, "avg_entry_cents": 1000,
                     "current_price_cents": 1000, "market_value_cents": -10000,
                     "unrealized_pl_cents": 0}]
-    b.working["AXTI"] = {"buy"}
+    b.working["AXTI"] = {"buy": 10}
     assert api.unprotected_positions(b) == []
 
 

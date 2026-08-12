@@ -320,7 +320,24 @@ def scan(client, conn, cfg=config):
         scanlog.append({"symbol": sym, "decision": decision, "reason": reason,
                         "at": time.strftime("%H:%M:%S"), **extra})
 
+    # DEDUPE THE CANDIDATE LIST BEFORE THE LOOP.
+    # OFAL and SMCL were each scored twice at 14:00:15 and 14:00:16 - one second
+    # apart, inside a SINGLE scan, so neither the lock nor the claim could help:
+    # both guards live inside the loop, and the loop was handed the same symbol
+    # twice by the movers feed. Keep the first occurrence, which is the
+    # highest-ranked one since the feed arrives sorted.
+    seen_syms, gainers = set(), []
     for g in movers.get("gainers", []):
+        s = str(g.get("symbol") or "").upper()
+        if not s or s in seen_syms:
+            continue
+        seen_syms.add(s)
+        gainers.append(g)
+    dropped = len(movers.get("gainers", [])) - len(gainers)
+    if dropped:
+        print(f"[radar] movers feed carried {dropped} duplicate symbol(s); deduped")
+
+    for g in gainers:
         sym = g.get("symbol")
         pct = float(g.get("percent_change", 0) or 0)
         price = float(g.get("price", 0) or 0)
@@ -338,6 +355,24 @@ def scan(client, conn, cfg=config):
         if db.alert_exists_today(conn, sym, "gainer"):
             logrow(sym, "skipped", "already alerted today", pct=pct, price=price)
             continue
+
+        # LEVERAGED WRAPPERS. Four of the top five scores were the same two
+        # trades: CWVX/CRWG/CRWU wrap CRWV, and NBIL/NBIG/NBEX wrap NBIS. The
+        # radar was not finding seven ideas, it was finding two and counting
+        # them seven times - and scoring the wrapper HIGHER, because a 2x
+        # product moves twice as far on the same news.
+        #
+        # Requires BOTH a leverage word AND a fund word, so a real company with
+        # "2X" in its name does not vanish. Runs before the liquidity lookup so
+        # it costs one cheap call, and logs like every other skip.
+        if getattr(cfg, "RADAR_SKIP_LEVERAGED", True):
+            nm = (client.get_asset(sym) or {}).get("name", "").upper()
+            lev = [w for w in ("2X", "3X", "-1X", "LEVERAGED", "INVERSE",
+                               "BULL ", "BEAR ", " ETN") if w in nm]
+            if lev and ("ETF" in nm or "ETN" in nm or "DAILY" in nm):
+                logrow(sym, "skipped", f"leveraged wrapper: {nm[:60]}",
+                       pct=pct, price=price)
+                continue
 
         pct, price, is_ipo, verified = _verify_pct(client, sym, price, pct, cfg)
         if verified and pct < cfg.RADAR_MIN_MOVE_PCT:

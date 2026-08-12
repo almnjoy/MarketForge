@@ -258,6 +258,10 @@ RADAR_MIN_PRICE_CENTS = int(_get("RADAR_MIN_PRICE_CENTS", 300))
 # trade at size. $1M to start - deliberately permissive, tighten once the scan
 # log shows what it is actually rejecting. 0 disables.
 RADAR_MIN_DOLLAR_VOLUME = float(_get("RADAR_MIN_DOLLAR_VOLUME", 1_000_000))
+# Drop leveraged/inverse wrappers from the gainer universe. CWVX/CRWG/CRWU all
+# wrap CRWV and NBIL/NBIG/NBEX all wrap NBIS, so the board showed two ideas
+# seven times and ranked the wrapper above the company. Set false to see them.
+RADAR_SKIP_LEVERAGED = (_get("RADAR_SKIP_LEVERAGED", "true") or "true").lower() == "true"
 RADAR_TRAIL_PCT = float(_get("RADAR_TRAIL_PCT", 0.10))        # suggested trailing stop
 RADAR_DISCORD_WEBHOOK = _get("RADAR_DISCORD_WEBHOOK", "") or ""
 

@@ -291,19 +291,36 @@ def overview():
 
         # Same unprotected check the live desk runs, pointed at paper. Shorts
         # count as guarded by a working BUY, longs by a working SELL.
+        #
+        # Quantities, not just sides. HQI held 58 with a trailing stop for 29 and
+        # this reported it protected, so 29 shares were uncovered and invisible.
+        # "Is there an exit?" is the wrong question; "does the exit cover the
+        # position?" is the one that protects anything.
         guarded = {}
         for o in orders:
-            if o.get("symbol"):
-                guarded.setdefault(o["symbol"], set()).add(str(o.get("side")))
+            sym = o.get("symbol")
+            if not sym:
+                continue
+            try:
+                q = abs(float(o.get("qty") or 0)) - abs(float(o.get("filled_qty") or 0))
+            except Exception:
+                q = 0.0
+            guarded.setdefault(sym, {}).setdefault(str(o.get("side")), 0.0)
+            guarded[sym][str(o.get("side"))] += max(0.0, q)
         naked = []
         for p in positions:
             q = float(p.get("qty") or 0)
             if q == 0:
                 continue
             need = "sell" if q > 0 else "buy"
-            if need not in guarded.get(p["symbol"], ()):
+            size = abs(q)
+            covered = float(guarded.get(p["symbol"], {}).get(need, 0.0))
+            if covered + 1e-6 < size:
                 naked.append({"symbol": p["symbol"], "qty": q,
-                              "side": "long" if q > 0 else "short", "needs": need})
+                              "side": "long" if q > 0 else "short", "needs": need,
+                              "covered": covered,
+                              "uncovered": round(size - covered, 6),
+                              "partial": covered > 0})
 
         raw = acct.get("raw") or {}
         equity = acct["equity_cents"] / 100.0

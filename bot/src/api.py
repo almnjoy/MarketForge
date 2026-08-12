@@ -193,15 +193,21 @@ def _exit_side(qty):
 
 
 def _working_exit_orders(client):
-    """{symbol: set_of_working_order_sides} for every live order.
+    """{symbol: {side: qty_covered}} for every live order.
 
-    Was _open_sell_orders(), which only knew about sells. A short position is
-    guarded by a working BUY, so a sell-only view reported every short as
-    unprotected forever - or worse, let arm_trail() fire a second sell.
+    Was a set of SIDES, which answered "does any working exit exist?" - but the
+    question that protects money is "does the exit cover the WHOLE position?"
+    HQI sat at 58 shares with a trailing stop for 29 and the sweep called it
+    protected, so 29 shares were uncovered AND invisible. Same shape as the
+    original naked-position bug, one level down: a partial answer that reads as
+    a complete one.
+
+    Quantities are summed, because two partial exits can legitimately add up to
+    full coverage.
     """
     try:
         raw = client._req("GET", client.trade_base, "/v2/orders",
-                          params={"status": "open", "limit": 100})
+                          params={"status": "open", "limit": 200})
     except Exception:
         # Fail CLOSED: an empty map means "nothing is known to be guarded", so
         # positions get reported as unprotected rather than silently cleared.
@@ -209,14 +215,26 @@ def _working_exit_orders(client):
     out = {}
     for o in (raw or []):
         sym, side = o.get("symbol"), str(o.get("side"))
-        if sym:
-            out.setdefault(sym, set()).add(side)
+        if not sym:
+            continue
+        try:
+            q = abs(float(o.get("qty") or 0))
+        except Exception:
+            q = 0.0
+        # A filled portion no longer protects what is left open.
+        try:
+            q -= abs(float(o.get("filled_qty") or 0))
+        except Exception:
+            pass
+        out.setdefault(sym, {}).setdefault(side, 0.0)
+        out[sym][side] += max(0.0, q)
     return out
 
 
 def _open_sell_orders(client):
     """Back-compat shim: symbols with a working SELL. Prefer _working_exit_orders."""
-    return {s for s, sides in _working_exit_orders(client).items() if "sell" in sides}
+    return {s for s, sides in _working_exit_orders(client).items()
+            if sides.get("sell", 0) > 0}
 
 
 def unprotected_positions(client):
@@ -239,8 +257,14 @@ def unprotected_positions(client):
         if not sym or qty == 0:
             continue
         need = _exit_side(qty)
-        if need in guarded.get(sym, ()):
+        size = abs(qty)
+        covered = float(guarded.get(sym, {}).get(need, 0.0))
+        # PARTIAL COVERAGE IS NOT COVERAGE. 58 shares behind a stop for 29 means
+        # 29 are naked, and reporting "protected" hid exactly that. Tolerance is
+        # for float noise on fractional positions, not for missing shares.
+        if covered + 1e-6 >= size:
             continue
+        partial = covered > 0
         # list_positions() returns *_cents keys. The old code read
         # "avg_entry_price"/"current_price"/"unrealized_pl", which do not exist
         # on that dict, so the banner rendered blank prices on the one screen
@@ -250,6 +274,11 @@ def unprotected_positions(client):
             "qty": qty,
             "side": "long" if qty > 0 else "short",
             "needs": need,
+            "covered": covered,
+            "uncovered": round(size - covered, 6),
+            "partial": partial,
+            "why": (f"only {covered:g} of {size:g} covered by a working {need}"
+                    if partial else f"no working {need}"),
             "avg_entry": cents_to_dollars(p.get("avg_entry_cents")),
             "price": cents_to_dollars(p.get("current_price_cents")),
             "unrealized_pl": cents_to_dollars(p.get("unrealized_pl_cents")),
@@ -275,11 +304,19 @@ def arm_trail(client, symbol, trail_pct, qty=None):
         return {"ok": False, "error": f"{symbol} position is flat"}
     side = _exit_side(raw_qty)
 
-    working = _working_exit_orders(client).get(symbol, set())
-    if side in working:
+    size = abs(raw_qty)
+    covered = float(_working_exit_orders(client).get(symbol, {}).get(side, 0.0))
+    if covered + 1e-6 >= size:
         return {"ok": False, "error": f"{symbol} already has a working {side} order"}
 
-    q = abs(int(float(qty if qty is not None else raw_qty)))
+    # Arm only what is UNCOVERED. This used to refuse outright the moment any
+    # working exit existed, so a partially covered position (HQI: 58 held, 29
+    # stopped) could never be topped up - the only fix was to cancel the good
+    # order by hand. Now it protects the remainder and leaves the rest alone.
+    if qty is not None:
+        q = abs(int(float(qty)))
+    else:
+        q = int(size - covered)
     if q < 1:
         return {"ok": False, "error": "trailing stops need at least 1 whole share"}
 
