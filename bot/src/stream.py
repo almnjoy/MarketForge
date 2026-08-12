@@ -43,7 +43,21 @@ import time
 import config
 
 OUT_PATH = config.DATA_DIR / "live-prices.json"
-MAX_SYMBOLS = 30                  # free-plan websocket cap
+
+# THE CAP IS ON SUBSCRIPTIONS, NOT SYMBOLS.
+# Alpaca's free plan allows 30 *subscriptions*. Sending the same list to both
+# `trades` and `quotes` is TWO per symbol, so 16 symbols was 32 and Alpaca
+# answered `ERROR 405: symbol limit exceeded` - it then delivered nothing at all,
+# so the tap looked authenticated and alive while the desk stayed on 15-minute
+# delayed prices. Authenticated is not subscribed.
+#
+# Both channels are worth keeping: a QUOTE proves the market is live for a name
+# that has not printed a trade recently, which is exactly the "no data vs no
+# movement" distinction this module exists to preserve. So the symbol budget is
+# derived from the subscription cap rather than being a second hand-typed number.
+MAX_SUBSCRIPTIONS = int(getattr(config, "STREAM_MAX_SUBSCRIPTIONS", 30))
+CHANNELS = ("trades", "quotes")
+MAX_SYMBOLS = max(1, MAX_SUBSCRIPTIONS // len(CHANNELS))    # 15
 STALE_S = float(getattr(config, "STREAM_STALE_S", 90))
 
 _prices = {}
@@ -81,11 +95,40 @@ def _flush():
                    "NO DATA, not an unchanged price. Check `fresh`."),
         "prices": rows,
     }
+    text = json.dumps(payload, indent=1)
     try:
         OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = OUT_PATH.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=1), encoding="utf-8")
-        tmp.replace(OUT_PATH)      # atomic: a reader never sees a half file
+    except Exception as e:
+        print(f"[stream] cannot create {OUT_PATH.parent}: {e}")
+        return
+    tmp = OUT_PATH.with_suffix(".tmp")
+    try:
+        # Preferred: write a temp file and rename, so a reader never sees half.
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(OUT_PATH)
+        return
+    except OSError as e:
+        # WinError 5 on a MAPPED NETWORK DRIVE. os.replace over SMB is denied
+        # when the destination is open by another process, and the desk polls
+        # this file constantly. The rename failed every single flush, so
+        # live-prices.json never updated and the feed chip could never turn
+        # green - the tap was working and the file was frozen.
+        #
+        # Atomicity is a nice-to-have here; a readable file is not. Fall back to
+        # writing in place. A torn read is already handled: read_live() and
+        # /api/live both parse inside try/except and treat a bad parse as "no
+        # data", which is the safe direction.
+        if not _flush.__dict__.get("warned"):
+            _flush.__dict__["warned"] = True
+            print(f"[stream] atomic rename unavailable ({e.__class__.__name__}: "
+                  f"{str(e)[:80]}). Writing in place instead - normal on a mapped "
+                  f"network drive. Saying this once.")
+    try:
+        OUT_PATH.write_text(text, encoding="utf-8")
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
     except Exception as e:
         print(f"[stream] write failed: {e}")
 
@@ -208,9 +251,13 @@ def run(symbols, on_update=None):
             t = m.get("T")
             if t == "success" and m.get("msg") == "authenticated":
                 _state.update(connected=True, since=time.strftime("%H:%M:%S"))
-                ws.send(json.dumps({"action": "subscribe",
-                                    "trades": symbols, "quotes": symbols}))
-                print("[stream] authenticated, subscribed")
+                sub = {"action": "subscribe"}
+                for ch in CHANNELS:
+                    sub[ch] = symbols
+                ws.send(json.dumps(sub))
+                print(f"[stream] authenticated, subscribing {len(symbols)} symbols "
+                      f"x {len(CHANNELS)} channels = "
+                      f"{len(symbols) * len(CHANNELS)}/{MAX_SUBSCRIPTIONS} subscriptions")
             elif t == "error":
                 _state["error"] = m.get("msg")
                 print(f"[stream] ERROR {m.get('code')}: {m.get('msg')}")

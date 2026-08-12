@@ -60,8 +60,11 @@ def test_missing_file_is_not_an_error():
     assert stream.read_live() is None
 
 
-def test_symbol_budget_is_the_free_plan_cap():
-    assert stream.MAX_SYMBOLS == 30
+def test_symbol_budget_is_derived_from_the_subscription_cap():
+    """Do NOT restate the number. The cap is on SUBSCRIPTIONS and each symbol
+    costs one per channel; hard-coding 30 here is what let 16 symbols x 2
+    channels go out against a 30 cap and get rejected wholesale."""
+    assert stream.MAX_SYMBOLS * len(stream.CHANNELS) <= stream.MAX_SUBSCRIPTIONS
 
 
 TEST_PREFIX = "ZTEST"
@@ -106,7 +109,7 @@ def test_positions_are_never_evicted_by_radar():
     _seed_alerts(60)
     try:
         syms = stream.default_symbols(C())
-        assert len(syms) == 30, len(syms)
+        assert len(syms) == stream.MAX_SYMBOLS, len(syms)
         for i in range(5):
             assert f"POS{i}" in syms, syms[:8]
         assert syms[:5] == [f"POS{i}" for i in range(5)]
@@ -129,7 +132,7 @@ def test_indices_survive_a_busy_radar():
             def list_positions(self):
                 return [{"symbol": "SMCI"}]
         syms = stream.default_symbols(C())
-        assert len(syms) == 30
+        assert len(syms) == stream.MAX_SYMBOLS
         assert syms[0] == "SMCI", syms[:5]
         for s in stream.INDEXES:
             assert s in syms, f"{s} evicted by a busy radar: {syms}"

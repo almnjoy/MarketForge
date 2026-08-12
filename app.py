@@ -938,6 +938,13 @@ def _sched_load():
             "job": str(d.get("job", "radar")),
             "market_hours_only": bool(d.get("market_hours_only", True)),
             "last_run": d.get("last_run"),
+            # THE FIELD THE DUE-CHECK ACTUALLY READS. It was not in this dict,
+            # so every reload lost it: `float(None or 0)` is 0, `time.time() - 0`
+            # is enormous, and therefore ALWAYS overdue. The worker ticks every
+            # 20s, so enabling a 30-minute scan fired it three times in 43
+            # seconds. An allowlisting loader that forgets one key silently
+            # resets the state machine it is loading.
+            "last_run_ts": float(d.get("last_run_ts") or 0),
             "last_result": d.get("last_result"),
             "next_run": d.get("next_run")}
 
@@ -968,8 +975,10 @@ def _sched_worker():
         try:
             s = _sched_load()
             if s["enabled"]:
-                due = (not s.get("last_run")) or (
-                    time.time() - float(s.get("last_run_ts") or 0) >= s["every_min"] * 60)
+                # First enable runs once immediately (last_run_ts == 0), then the
+                # interval governs. Guarded by last_run_ts surviving the reload.
+                due = (time.time() - float(s.get("last_run_ts") or 0)
+                       >= s["every_min"] * 60)
                 if due:
                     skip = s["market_hours_only"] and not _market_hours_now()
                     if skip:
