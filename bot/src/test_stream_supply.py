@@ -17,6 +17,7 @@ import time
 import types
 
 import config
+import db
 import fundamentals
 import stream
 
@@ -63,19 +64,35 @@ def test_symbol_budget_is_the_free_plan_cap():
     assert stream.MAX_SYMBOLS == 30
 
 
+TEST_PREFIX = "ZTEST"
+
+
+def _clear_seeded():
+    """Remove ONLY this file's fixtures from the shared store."""
+    conn = db.connect()
+    db.init_db(conn)
+    conn.execute("DELETE FROM radar_alerts WHERE symbol LIKE ?", (TEST_PREFIX + "%",))
+    conn.commit()
+    return conn
+
+
 def _seed_alerts(n):
     """Put n alerts in the REAL store the radar uses.
 
-    REGRESSION: these tests used to write data/radar.json, which does not exist
-    and never did - radar.py calls db.record_alert(). So the tests passed against
-    a file the production path never reads, while the live tap silently fell back
+    REGRESSION 1: these tests used to write data/radar.json, which does not exist
+    and never did - radar.py calls db.record_alert(). So they passed against a
+    file the production path never reads, while the live tap silently fell back
     to 5 symbols. A fixture that invents its own data source proves nothing.
+
+    REGRESSION 2 (worse): having moved to the real store, they then SEEDED IT AND
+    LEFT THE ROWS THERE. Running the suite put 60 fake alerts on the actual radar
+    board, and the leftovers made the next run's assertions fail for reasons that
+    had nothing to do with the code. Tests that share production storage must
+    clean up before AND after, and must be identifiable as fixtures.
     """
-    import db
-    conn = db.connect()
-    db.init_db(conn)
+    conn = _clear_seeded()
     for i in range(n):
-        db.record_alert(conn, symbol=f"RAD{i}", kind="gainer", pct=10.0,
+        db.record_alert(conn, symbol=f"{TEST_PREFIX}{i}", kind="gainer", pct=10.0,
                         price_cents=1000, score=90 - i)
     return conn
 
@@ -87,28 +104,43 @@ def test_positions_are_never_evicted_by_radar():
         def list_positions(self):
             return [{"symbol": f"POS{i}"} for i in range(5)]
     _seed_alerts(60)
-    syms = stream.default_symbols(C())
-    assert len(syms) == 30, len(syms)
-    for i in range(5):
-        assert f"POS{i}" in syms, syms[:8]
-    assert syms[:5] == [f"POS{i}" for i in range(5)]
-    # and the budget actually got spent on radar names, not left idle
-    assert any(s.startswith("RAD") for s in syms), syms
+    try:
+        syms = stream.default_symbols(C())
+        assert len(syms) == 30, len(syms)
+        for i in range(5):
+            assert f"POS{i}" in syms, syms[:8]
+        assert syms[:5] == [f"POS{i}" for i in range(5)]
+        # and the budget actually got spent on radar names, not left idle
+        assert any(s.startswith(TEST_PREFIX) for s in syms), syms
+    finally:
+        _clear_seeded()
 
 
-def test_indices_are_requested():
-    class C:
-        def list_positions(self):
-            return []
-    syms = stream.default_symbols(C())
-    for s in ("SPY", "QQQ", "IWM"):
-        assert s in syms, syms
+def test_indices_survive_a_busy_radar():
+    """REAL BUG this caught: indices were appended LAST, so a 60-alert day
+    evicted SPY/QQQ/IWM and the regime gate's own symbols went untapped without
+    anything saying so. They are reserved now, right after positions.
+
+    Deliberately does NOT clear the store first - a full store is the condition
+    the bug needed."""
+    _seed_alerts(60)
+    try:
+        class C:
+            def list_positions(self):
+                return [{"symbol": "SMCI"}]
+        syms = stream.default_symbols(C())
+        assert len(syms) == 30
+        assert syms[0] == "SMCI", syms[:5]
+        for s in stream.INDEXES:
+            assert s in syms, f"{s} evicted by a busy radar: {syms}"
+        assert any(x.startswith(TEST_PREFIX) for x in syms), "radar got no slots"
+    finally:
+        _clear_seeded()
 
 
 def test_a_missing_alert_store_still_gives_indices():
     """The failure that hid the bug: an unreadable source must not silently
     produce a 5-symbol subscription that looks like success."""
-    import db
     orig = db.recent_alerts
     db.recent_alerts = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
     try:
@@ -186,5 +218,9 @@ if __name__ == "__main__":
                 failed += 1
     if stream.OUT_PATH.exists():
         stream.OUT_PATH.unlink()
+    try:
+        _clear_seeded()          # never leave fixtures in the real radar store
+    except Exception:
+        pass
     print(f"\n{passed} passed, {failed} failed")
     raise SystemExit(1 if failed else 0)

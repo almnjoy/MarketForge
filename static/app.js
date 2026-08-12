@@ -147,6 +147,15 @@ document.querySelectorAll('#tabs button').forEach((b) => b.onclick = () => {
   if (b.dataset.tab === 'saved') loadSavedGrid();
   // the paper book is a separate broker account - fetch on open, then on demand
   if (b.dataset.tab === 'paper') loadPaper();
+  // RADAR is sub-tabbed now; refresh whichever pane is showing.
+  if (b.dataset.tab === 'radar') {
+    const on = document.querySelector('#view-radar .subtabs button.on');
+    const sub = on ? on.dataset.sub : 'catalyst';
+    if (sub === 'retail') loadReddit();
+    else if (sub === 'brief') loadBrief();
+    else if (sub === 'scoring') loadScanlog();
+    else loadRadar();
+  }
   // A hidden element has no scrollHeight, so every scroll-to-bottom done while
   // the COPILOT tab was display:none silently did nothing and it opened at the
   // top. Scroll AFTER the tab is visible and laid out.
@@ -158,10 +167,21 @@ document.querySelectorAll('#tabs button').forEach((b) => b.onclick = () => {
   }
 });
 
-/* admin sub-tabs: the whole inventory on one screen was a wall */
-document.querySelectorAll('#subtabs button').forEach((b) => b.onclick = () => {
-  document.querySelectorAll('#subtabs button').forEach((x) => x.classList.toggle('on', x === b));
-  document.querySelectorAll('.subview').forEach((v) => v.classList.toggle('on', v.id === 'sub-' + b.dataset.sub));
+/* Sub-tabs, SCOPED to their own section.
+   This used to select '#subtabs button' and '.subview' globally, which was fine
+   while ADMIN was the only group. RADAR is a second one, and a global selector
+   would have made clicking Catalyst also switch the admin pane underneath.
+   Now each nav only touches subviews inside its own <section>. */
+document.querySelectorAll('nav.subtabs').forEach((nav) => {
+  const scope = nav.closest('section') || document;
+  nav.querySelectorAll('button').forEach((b) => b.onclick = () => {
+    nav.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    scope.querySelectorAll(':scope > .subview').forEach(
+      (v) => v.classList.toggle('on', v.id === 'sub-' + b.dataset.sub));
+    if (b.dataset.sub === 'retail') loadReddit();
+    if (b.dataset.sub === 'brief') loadBrief();
+    if (b.dataset.sub === 'scoring') loadScanlog();
+  });
 });
 /* jump straight to an admin sub-tab (used by the Ctrl+K palette) */
 function subTo(sub) {
@@ -495,6 +515,83 @@ async function loadOverview() {
 }
 
 /* ---------- radar ---------- */
+/* ---------- brief: what changed ---------- */
+const SEV_ORDER = { high: 0, medium: 1, low: 2 };
+async function loadBrief() {
+  const box = $('#briefBody'); if (!box) return;
+  const d = await J('/api/bot/changed').catch(() => null);
+  if (!d) { box.innerHTML = '<span class="dim">engine unreachable</span>'; return; }
+  $('#briefTs').textContent = d.ts ? `as of ${String(d.ts).slice(5, 16).replace('T', ' ')}` : '';
+  if (!d.ts) {
+    box.innerHTML = '<span class="dim">No brief yet. Hit "Brief me", or turn on '
+      + 'the schedule with job=brief.</span>';
+    return;
+  }
+  if (d.quiet) {
+    // Deliberately says nothing rather than manufacturing an update. A brief
+    // that fires every 5 minutes saying "no change" trains you to ignore it.
+    box.innerHTML = '<div class="brief-quiet">Nothing has changed since the last '
+      + 'brief. No regime shift, no position change, no new catalysts over your '
+      + 'score threshold.</div>';
+    return;
+  }
+  const ch = [...(d.changes || [])].sort(
+    (a, b) => (SEV_ORDER[a.severity] ?? 9) - (SEV_ORDER[b.severity] ?? 9));
+  box.innerHTML =
+    (d.text ? `<div class="brief-text">${esc(d.text)}</div>` : '')
+    + ch.map(c => `<div class="brief-row ${esc(c.severity)}">`
+      + `<b>${esc(String(c.kind).toUpperCase())}</b> ${esc(c.text)}</div>`).join('')
+    + (d.facts && d.facts.live_note
+      ? `<div class="dim" style="margin-top:8px">${esc(d.facts.live_note)}</div>` : '');
+}
+document.addEventListener('click', async (e) => {
+  if (!e.target || e.target.id !== 'briefRun') return;
+  e.target.disabled = true; e.target.textContent = 'Thinking...';
+  try {
+    await J('/api/bot/run/changed', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  } catch (err) { notify('brief failed: ' + err.message, 'err'); }
+  e.target.disabled = false; e.target.textContent = 'Brief me';
+  loadBrief();
+});
+
+/* ---------- scoring log: what got REJECTED and why ---------- */
+async function loadScanlog() {
+  const box = $('#scanlogBody'); if (!box) return;
+  const d = await J('/api/bot/scanlog').catch(() => null);
+  const rows = (d && d.rows) || [];
+  $('#scanlogTs').textContent = d && d.finished
+    ? `scan ${String(d.finished).slice(5, 16).replace('T', ' ')}` : '';
+  $('#scanlogCount').textContent = d && d.rows
+    ? `(${d.alerted} alerted · ${d.skipped} skipped)` : '';
+  if (!rows.length) {
+    box.innerHTML = `<span class="dim">${esc((d && d.note) || 'no scan log yet')}</span>`;
+    return;
+  }
+  const cell = (r) => {
+    const bits = [];
+    if (r.pct != null) bits.push(`${Number(r.pct).toFixed(1)}%`);
+    if (r.price != null) bits.push(fmt$(r.price));
+    if (r.dollar_volume) bits.push(`$${(r.dollar_volume / 1e6).toFixed(1)}M adv`);
+    return bits.join(' · ');
+  };
+  // Alerted first, then the rejects - the rejects are the point of this view.
+  const ordered = [...rows].sort((a, b) =>
+    (a.decision === 'alerted' ? 0 : 1) - (b.decision === 'alerted' ? 0 : 1));
+  box.innerHTML = '<table><tr><th>sym</th><th></th><th>numbers</th><th>reason</th></tr>'
+    + ordered.map(r => `<tr class="log-${esc(r.decision)}">`
+      + `<td><b>${esc(r.symbol)}</b></td>`
+      + `<td>${r.decision === 'alerted'
+        ? `<span class="up">alerted${r.score != null ? ' ' + r.score : ''}</span>`
+        : '<span class="dim">skipped</span>'}</td>`
+      + `<td class="dim">${esc(cell(r))}</td>`
+      + `<td class="dim">${esc(r.reason || '')}</td></tr>`).join('')
+    + '</table>';
+}
+document.addEventListener('click', (e) => {
+  if (e.target && e.target.id === 'scanlogRefresh') loadScanlog();
+});
+
 /* Supply chip for a radar card.
    A catalyst is DEMAND; share count is SUPPLY. "micro" next to a +45% move is
    the single most useful thing on the card, and its absence used to be silent.

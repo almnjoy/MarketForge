@@ -715,6 +715,8 @@ BOT_GET = {"status", "positions", "orders", "equity", "radar", "reddit",
            "paper/status",    # is the paper account linked (proves it by fetching)
            "paper/overview",  # the PAPER tab: shadow book, read-only
            "paper/unprotected",  # paper positions with no working exit
+           "scanlog",         # every decision from the last scan, incl. rejects
+           "changed",         # the latest "what changed" diff (see also /api/brief)
            "shutdown-check"}  # is anything working that must not be abandoned
 
 
@@ -2225,7 +2227,7 @@ class Handler(BaseHTTPRequestHandler):
                 s["every_min"] = n
             if "job" in body:
                 job = str(body["job"])
-                if job not in ("radar",):
+                if job not in ("radar", "changed"):
                     return self._json({"ok": False, "error": f"unknown job {job!r}"}, 400)
                 s["job"] = job
             if "market_hours_only" in body:

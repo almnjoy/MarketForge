@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import urllib.request
 import time
 import uuid
@@ -224,6 +225,77 @@ def maybe_autotrade(client, conn, sym, price, score, vlabel, held, cfg=config,
         return None
 
 
+SCANLOG_PATH = config.DATA_DIR / "scan-log.json"
+LOCK_PATH = config.DATA_DIR / "radar-scan.lock"
+LOCK_STALE_S = 300          # a scan that has run 5 minutes is dead, not busy
+
+
+class ScanBusy(RuntimeError):
+    pass
+
+
+class _ScanLock:
+    """One radar scan at a time, across PROCESSES.
+
+    THE BUG (2026-08-12): CWVX appeared twice in one board with scores 75 and 72.
+    Not brain 1 vs brain 2 - the short lane never writes here. It was ONE scanner
+    running twice. `alert_exists_today()` is checked at the top of the loop and
+    `record_alert()` happens at the bottom, with the LLM call in between, so two
+    overlapping scans both passed the check, both spent seconds scoring, and both
+    wrote. Different scores because the model is nondeterministic.
+
+    /api/run/radar shells out to a fresh `python radar.py`, so a threading.Lock
+    cannot see it. The lock has to be on disk.
+
+    Same bug shape as the duplicate paper fires: check-then-act with expensive
+    work in the gap. The other half of the fix is claiming the symbol BEFORE the
+    LLM call, further down.
+    """
+
+    def __enter__(self):
+        try:
+            if LOCK_PATH.exists():
+                age = time.time() - LOCK_PATH.stat().st_mtime
+                if age < LOCK_STALE_S:
+                    raise ScanBusy(f"another scan started {age:.0f}s ago "
+                                   f"({LOCK_PATH.name}); refusing to run a second")
+                print(f"[radar] clearing a stale lock ({age:.0f}s old)")
+            LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+            LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
+        except ScanBusy:
+            raise
+        except Exception as e:
+            print(f"[radar] lock unavailable ({e}); continuing unlocked")
+        return self
+
+    def __exit__(self, *a):
+        try:
+            LOCK_PATH.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
+
+
+def _scanlog_write(rows, started):
+    """Every DECISION, not just the alerts.
+
+    Rejections used to `continue` silently, so the board showed what passed and
+    nothing about what did not. You cannot tune a floor you cannot see rejecting
+    things. This is what the RADAR > Scoring tab renders.
+    """
+    try:
+        SCANLOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SCANLOG_PATH.write_text(json.dumps({
+            "started": started,
+            "finished": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "alerted": sum(1 for r in rows if r["decision"] == "alerted"),
+            "skipped": sum(1 for r in rows if r["decision"] != "alerted"),
+            "rows": rows,
+        }, indent=1), encoding="utf-8")
+    except Exception as e:
+        print(f"[radar] scan log write failed: {e}")
+
+
 def scan(client, conn, cfg=config):
     try:
         movers = client.get_movers(top=cfg.RADAR_TOP_N)
@@ -242,20 +314,69 @@ def scan(client, conn, cfg=config):
         except Exception as e:
             print(f"radar: reddit buzz unavailable ({str(e)[:80]})")
     alerts = []
+    scanlog, started = [], time.strftime("%Y-%m-%dT%H:%M:%S")
+
+    def logrow(sym, decision, reason, **extra):
+        scanlog.append({"symbol": sym, "decision": decision, "reason": reason,
+                        "at": time.strftime("%H:%M:%S"), **extra})
+
     for g in movers.get("gainers", []):
         sym = g.get("symbol")
         pct = float(g.get("percent_change", 0) or 0)
         price = float(g.get("price", 0) or 0)
-        if not sym or pct < cfg.RADAR_MIN_MOVE_PCT:
+        if not sym:
+            continue
+        if pct < cfg.RADAR_MIN_MOVE_PCT:
+            logrow(sym, "skipped", f"move {pct:.1f}% under the "
+                                   f"{cfg.RADAR_MIN_MOVE_PCT:.0f}% bar", pct=pct)
             continue
         if price * 100 < cfg.RADAR_MIN_PRICE_CENTS:
-            continue  # skip low-float penny/halted junk
+            logrow(sym, "skipped", f"${price:.2f} under the "
+                                   f"${cfg.RADAR_MIN_PRICE_CENTS/100:.2f} price floor",
+                   pct=pct, price=price)
+            continue
         if db.alert_exists_today(conn, sym, "gainer"):
+            logrow(sym, "skipped", "already alerted today", pct=pct, price=price)
             continue
 
         pct, price, is_ipo, verified = _verify_pct(client, sym, price, pct, cfg)
         if verified and pct < cfg.RADAR_MIN_MOVE_PCT:
-            continue  # screener move was fake (split/stale print); the REAL move is under the bar
+            logrow(sym, "skipped", f"verified move is only {pct:.1f}% - the "
+                                   f"screener number was stale or split-skewed",
+                   pct=pct, price=price)
+            continue
+
+        # LIQUIDITY FLOOR. The long screen has had one forever; the radar had
+        # none, so it surfaced names nobody could actually trade at size.
+        floor = getattr(cfg, "RADAR_MIN_DOLLAR_VOLUME", 0)
+        adv = None
+        if floor:
+            try:
+                import signals
+                bars = client.get_daily_bars(sym, limit=25)
+                adv = signals.avg_dollar_volume(bars) if bars else None
+            except Exception:
+                adv = None
+            if adv is not None and adv < floor:
+                logrow(sym, "skipped",
+                       f"${adv/1e6:.2f}M avg daily dollar volume, under the "
+                       f"${floor/1e6:.0f}M floor", pct=pct, price=price,
+                       dollar_volume=round(adv))
+                continue
+
+        # CLAIM THE SYMBOL BEFORE THE EXPENSIVE PART.
+        # The LLM call below takes seconds. Recording the alert only afterwards
+        # is what let two overlapping scans both score the same name. The scan
+        # lock makes overlap impossible; this makes it harmless if it ever
+        # happens anyway (a cron and a manual run racing on the same second).
+        try:
+            db.record_alert(conn, symbol=sym, kind="gainer", pct=pct,
+                            price_cents=int(price * 100), headline="", url="",
+                            note="scoring...", score=None, verdict="pending",
+                            catalyst_type="", why="")
+        except Exception as e:
+            logrow(sym, "skipped", f"could not claim: {str(e)[:70]}")
+            continue
 
         headlines, url = [], ""
         try:
@@ -291,9 +412,14 @@ def scan(client, conn, cfg=config):
         if ks_ok:
             maybe_autotrade(client, conn, sym, price, score, vlabel, held, cfg,
                             verified=verified, is_ipo=is_ipo)
-        db.record_alert(conn, symbol=sym, kind="gainer", pct=pct, price_cents=int(price * 100),
-                        headline=headline, url=url, note=note, score=score,
-                        verdict=vlabel, catalyst_type=ctype, why=why)
+        # Fill in the row claimed before scoring, rather than inserting a second.
+        db.update_alert_scoring(conn, symbol=sym, kind="gainer",
+                                headline=headline, url=url, note=note, score=score,
+                                verdict=vlabel, catalyst_type=ctype, why=why,
+                                pct=pct, price_cents=int(price * 100))
+        logrow(sym, "alerted", why or ctype or "scored", pct=pct, price=price,
+               score=score, verdict=vlabel, catalyst_type=ctype,
+               dollar_volume=round(adv) if adv else None)
         # SUPPLY. The catalyst above is DEMAND; this is the other half. The same
         # headline on a 14M-share company and a 24,000M-share company are not the
         # same event, and until now this scan could not tell them apart.
@@ -332,7 +458,20 @@ def scan(client, conn, cfg=config):
                 msg += f"\n{url}"
             _post_discord(cfg.RADAR_DISCORD_WEBHOOK, msg)
 
-    alerts.sort(key=lambda a: (a["score"] if a["score"] is not None else -1), reverse=True)
+    # RANK REAL COMPANIES ABOVE LEVERAGED PRODUCTS.
+    # The board sorts on the LLM score, and the movers list sorts on percent
+    # move - so 2x single-stock ETPs win by construction. On 2026-08-12 the
+    # entire top board was CWVX/CRWG (CoreWeave), NBIL/NBIG (Nebius) and SMCL
+    # (Super Micro): products tracking someone else's news at 2x, with decay and
+    # an expense ratio, crowding out the companies whose news it actually was.
+    # They still appear - a filer just wins the tie.
+    def rank(a):
+        is_company = a.get("supply_class") not in (None, "not_a_filer")
+        return (1 if is_company else 0,
+                a["score"] if a["score"] is not None else -1)
+
+    alerts.sort(key=rank, reverse=True)
+    _scanlog_write(scanlog, started)
     return alerts
 
 
@@ -342,7 +481,14 @@ def main():
     db.init_db(conn)
     client = AlpacaClient()
     print(config.env_banner())
-    alerts = scan(client, conn)
+    try:
+        with _ScanLock():
+            alerts = scan(client, conn)
+    except ScanBusy as e:
+        # Exit 0: a refused duplicate is correct behaviour, not a failure. Exit 1
+        # would make /api/run/radar report an error for the thing working.
+        print(f"radar: {e}")
+        return
     print(f"radar: {len(alerts)} new alert(s) (min move {config.RADAR_MIN_MOVE_PCT:.0f}%).")
 
 

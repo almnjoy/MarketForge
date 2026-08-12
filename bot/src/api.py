@@ -678,6 +678,49 @@ def api_paper_overview():
     return jsonify(r), (200 if r.get("ok") else 502)
 
 
+@app.get("/api/scanlog")
+def api_scanlog():
+    """Every DECISION from the last scan, not just the alerts.
+
+    Rejections used to be invisible - they just `continue`d - so there was no way
+    to see what a floor was throwing away, or to tune it. This is what the
+    RADAR > Scoring tab renders.
+    """
+    try:
+        import radar
+        return jsonify(json.loads(radar.SCANLOG_PATH.read_text(encoding="utf-8")))
+    except Exception:
+        return jsonify({"rows": [], "alerted": 0, "skipped": 0,
+                        "note": "no scan log yet - run a scan"})
+
+
+@app.get("/api/changed")
+def api_changed():
+    """The most recent 'what CHANGED' read. READ-ONLY.
+
+    Distinct from /api/brief, which already existed: that one narrates today's
+    catalysts into themes with a `claude -p` turn. This one is a cheap
+    deterministic diff since the last run (regime flip, position opened/closed,
+    unprotected, new catalysts) and only asks a model to phrase it.
+    """
+    try:
+        import brief
+        return jsonify(json.loads(brief.OUT_PATH.read_text(encoding="utf-8")))
+    except Exception:
+        return jsonify({"ts": None, "quiet": True, "text": None, "changes": [],
+                        "note": "no brief yet"})
+
+
+@app.post("/api/run/changed")
+def api_run_changed():
+    """Compute the change read now. Facts in code, model only phrases them."""
+    try:
+        import brief
+        return jsonify(brief.run(AlpacaClient(), _conn()))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:300]}), 502
+
+
 @app.get("/api/paper/unprotected")
 def api_paper_unprotected():
     """Paper positions with no working exit. Same check the live desk runs."""

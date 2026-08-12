@@ -37,8 +37,7 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
 <nav id="tabs">
   <button data-tab="overview" class="on">OVERVIEW</button>
   <button data-tab="paper">PAPER</button>
-  <button data-tab="radar">CATALYST_RADAR</button>
-  <button data-tab="retail">RETAIL_RADAR</button>
+  <button data-tab="radar">RADAR</button>
   <button data-tab="workbench">WORKBENCH</button>
   <button data-tab="saved">SAVED</button>
   <button data-tab="journal">JOURNAL</button>
@@ -106,8 +105,16 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
     </div>
   </section>
 
-  <!-- CATALYST RADAR -->
+    <!-- RADAR: catalyst / retail / brief / scoring, sub-tabbed like ADMIN -->
   <section id="view-radar" class="view">
+    <nav class="subtabs">
+      <button data-sub="catalyst" class="on">Catalyst</button>
+      <button data-sub="retail">Retail</button>
+      <button data-sub="brief">Brief</button>
+      <button data-sub="scoring">Scoring</button>
+    </nav>
+
+    <div id="sub-catalyst" class="subview on">
     <div class="panel">
       <div class="panel-h">CATALYST_RADAR <span id="radarCount" class="dim"></span>
         <span id="lastScan" class="dim right"></span>
@@ -132,10 +139,9 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
       <div id="scanCatalyst" class="scanbox hidden"></div>
       <div id="radar" class="cards"></div>
     </div>
-  </section>
+    </div>
 
-  <!-- RETAIL RADAR (reddit) -->
-  <section id="view-retail" class="view">
+    <div id="sub-retail" class="subview">
     <div class="panel">
       <div class="panel-h">RETAIL_RADAR · Reddit <span id="redditCount" class="dim"></span>
         <span id="redditSubs" class="subchips"></span>
@@ -145,9 +151,37 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
       <div id="scanRetail" class="scanbox hidden"></div>
       <div id="reddit" class="cards"></div>
     </div>
+    </div>
+
+    <div id="sub-brief" class="subview">
+      <div class="panel">
+        <div class="panel-h">BRIEF <span class="dim">what changed since the last one</span>
+          <span id="briefTs" class="dim right" style="margin-right:10px"></span>
+          <button id="briefRun" class="btn sm">Brief me</button></div>
+        <div class="dim" style="font-size:12px;margin-bottom:8px">
+          Facts are computed in code; a model only writes the sentence. It stays
+          silent when nothing changed, so that a brief you see is worth reading.
+        </div>
+        <div id="briefBody">loading...</div>
+      </div>
+    </div>
+
+    <div id="sub-scoring" class="subview">
+      <div class="panel">
+        <div class="panel-h">SCORING LOG <span id="scanlogCount" class="dim"></span>
+          <span id="scanlogTs" class="dim right" style="margin-right:10px"></span>
+          <button id="scanlogRefresh" class="btn sm">Refresh</button></div>
+        <div class="dim" style="font-size:12px;margin-bottom:8px">
+          Every decision from the last scan, including what was <b>rejected and
+          why</b>. Rejections used to be invisible, so a floor could throw work
+          away silently. This is how you tune them.
+        </div>
+        <div id="scanlogBody">loading...</div>
+      </div>
+    </div>
   </section>
 
-  <!-- WORKBENCH: Claude Code's live canvas -->
+<!-- WORKBENCH: Claude Code's live canvas -->
   <section id="view-workbench" class="view">
     <div class="wb-bar">
       <span class="dim">panels/ renders live - ask the copilot or CC to build/transform boards. Drag a card's corner to resize. <span id="wbCount"></span></span>
@@ -192,7 +226,7 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
        Sub-tabbed, because all of it on one screen was a wall. No create/edit
        controls anywhere - it answers "what is in place", nothing more. -->
   <section id="view-admin" class="view">
-    <nav id="subtabs">
+    <nav id="subtabs" class="subtabs">
       <button data-sub="status" class="on">Status</button>
       <button data-sub="rules">Rules</button>
       <button data-sub="usage">Usage</button>

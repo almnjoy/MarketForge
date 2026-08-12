@@ -180,6 +180,53 @@ def _classify_openai(user, cfg):
         return None
 
 
+def complete(prompt, cfg=config, system="", timeout=None):
+    """PLAIN TEXT completion. Same plumbing as classify(), no JSON contract.
+
+    classify() was the only entry point, and it parses the reply as JSON - so any
+    caller wanting a sentence got None. brief.py needs prose, not a verdict.
+
+    Returns the text, or None if no scorer is configured or the call fails.
+    Callers must treat None as "write it yourself", never as an empty brief.
+    """
+    bin_, kind = _agent_bin()
+    if bin_:
+        model = cfg.RADAR_AGENT_MODEL if kind == "claude" else os.environ.get(
+            "AGENT_MODEL", cfg.RADAR_AGENT_MODEL)
+        full = (system + "\n\n" + prompt) if system else prompt
+        argv, stdin_text = _agent_argv(bin_, kind, model, full)
+        kw = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+        try:
+            p = subprocess.run(argv, input=stdin_text, text=True,
+                               encoding="utf-8", errors="replace",
+                               capture_output=True,
+                               timeout=timeout or cfg.RADAR_AGENT_TIMEOUT,
+                               **({} if stdin_text is not None
+                                  else {"stdin": subprocess.DEVNULL}), **kw)
+            if p.returncode == 0 and (p.stdout or "").strip():
+                return p.stdout.strip()
+        except Exception:
+            pass
+
+    base = (cfg.RADAR_LLM_BASE_URL or "").rstrip("/")
+    if not base:
+        return None
+    msgs = ([{"role": "system", "content": system}] if system else []) + \
+           [{"role": "user", "content": prompt}]
+    body = json.dumps({"model": cfg.RADAR_LLM_MODEL, "messages": msgs,
+                       "temperature": 0.2, "stream": False}).encode()
+    headers = {"Content-Type": "application/json"}
+    if cfg.RADAR_LLM_API_KEY:
+        headers["Authorization"] = f"Bearer {cfg.RADAR_LLM_API_KEY}"
+    try:
+        req = urllib.request.Request(base + "/chat/completions", data=body,
+                                     headers=headers)
+        resp = urllib.request.urlopen(req, timeout=timeout or cfg.RADAR_LLM_TIMEOUT)
+        return (json.loads(resp.read())["choices"][0]["message"]["content"] or "").strip()
+    except Exception:
+        return None
+
+
 def _parse(content):
     s, e = content.find("{"), content.rfind("}")
     if s < 0 or e < 0:

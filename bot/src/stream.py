@@ -116,9 +116,24 @@ def read_live(symbol=None, max_age_s=None):
     return rows
 
 
+INDEXES = ("SPY", "QQQ", "IWM")
+
+
 def default_symbols(client=None):
-    """The 30 that matter: open positions first (never evict those), then the
-    day's radar, then the indices the regime gate reads."""
+    """The 30 that matter, in priority order.
+
+    RESERVED, in this order, because these can never be allowed to lose their
+    slot to a noisy day:
+      1. open positions - the highest-value subscription you will ever have
+      2. SPY/QQQ/IWM   - what the regime gate reads
+
+    Then the day's radar fills whatever is left.
+
+    Indices used to be APPENDED LAST, which meant a 60-alert radar day silently
+    evicted them and the regime read went stale without saying so. Found by a
+    test running against a database that still had 60 leftover rows in it - the
+    accident reproduced the exact condition the bug needed.
+    """
     syms, seen = [], set()
 
     def add(s):
@@ -133,6 +148,8 @@ def default_symbols(client=None):
                 add(p.get("symbol"))
         except Exception:
             pass
+    for s in INDEXES:
+        add(s)
     # THE RADAR LIVES IN SQLITE, NOT A JSON FILE.
     # This originally read data/radar.json, which does not exist and never did -
     # radar.py calls db.record_alert(). The read failed, the except swallowed it,
@@ -151,8 +168,6 @@ def default_symbols(client=None):
         # Say it. A silent fallback to 5 symbols is the bug this comment is about.
         print(f"[stream] could not read recent alerts ({str(e)[:90]}); "
               f"subscribing to positions and indices only")
-    for s in ("SPY", "QQQ", "IWM"):
-        add(s)
     return syms
 
 

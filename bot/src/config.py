@@ -253,6 +253,11 @@ RADAR_MIN_MOVE_PCT = float(_get("RADAR_MIN_MOVE_PCT", 5.0))   # percent, e.g. 5 
 # Price floor filters out the low-float penny/halted junk that dominates raw
 # top-movers lists (the pump-and-dumps, not real catalysts). Default $3.
 RADAR_MIN_PRICE_CENTS = int(_get("RADAR_MIN_PRICE_CENTS", 300))
+# Liquidity floor on the RADAR. The long screen has had one forever
+# (MIN_AVG_DOLLAR_VOLUME); the radar had none, so it surfaced names nobody could
+# trade at size. $1M to start - deliberately permissive, tighten once the scan
+# log shows what it is actually rejecting. 0 disables.
+RADAR_MIN_DOLLAR_VOLUME = float(_get("RADAR_MIN_DOLLAR_VOLUME", 1_000_000))
 RADAR_TRAIL_PCT = float(_get("RADAR_TRAIL_PCT", 0.10))        # suggested trailing stop
 RADAR_DISCORD_WEBHOOK = _get("RADAR_DISCORD_WEBHOOK", "") or ""
 

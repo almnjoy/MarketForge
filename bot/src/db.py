@@ -222,6 +222,37 @@ def record_alert(conn, *, symbol, kind, pct, price_cents, headline="", url="", n
     conn.commit()
 
 
+def update_alert_scoring(conn, *, symbol, kind="gainer", headline="", url="",
+                         note="", score=None, verdict="", catalyst_type="",
+                         why="", pct=None, price_cents=None):
+    """Fill in today's alert row after the LLM has scored it.
+
+    The radar now CLAIMS a symbol before the expensive scoring call and fills the
+    result in afterwards, so two overlapping scans cannot both produce a card for
+    the same name. Without this the claim and the result would be two rows.
+
+    Updates the newest row for that symbol/date, so a re-scan on a later day
+    still creates its own alert.
+    """
+    sets = ["headline=?", "url=?", "note=?", "score=?", "verdict=?",
+            "catalyst_type=?", "why=?"]
+    vals = [headline, url, note, score, verdict, catalyst_type, why]
+    if pct is not None:
+        sets.append("pct=?")
+        vals.append(pct)
+    if price_cents is not None:
+        sets.append("price_cents=?")
+        vals.append(price_cents)
+    vals += [symbol, kind, utctoday()]
+    conn.execute(
+        f"UPDATE radar_alerts SET {', '.join(sets)} WHERE id = ("
+        f"  SELECT id FROM radar_alerts WHERE symbol=? AND kind=? AND date=? "
+        f"  ORDER BY id DESC LIMIT 1)",
+        vals,
+    )
+    conn.commit()
+
+
 def alert_exists_today(conn, symbol, kind="gainer") -> bool:
     row = conn.execute(
         "SELECT 1 FROM radar_alerts WHERE symbol=? AND kind=? AND date=?",
