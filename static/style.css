@@ -610,3 +610,14 @@ body.has-reader { overflow: hidden; }
 .sched-runs th { text-align: left; font-weight: 500; color: var(--dim);
   padding: 3px 6px 3px 0; }
 .sched-runs td { padding: 3px 6px 3px 0; border-top: 1px solid var(--border); }
+
+/* Supply chip on a radar card. A catalyst is demand; this is supply. */
+.supply { display: inline-flex; align-items: baseline; gap: 5px; margin: 6px 0 2px;
+  padding: 2px 8px; border-radius: 999px; font: 500 10.5px/1.6 var(--mono);
+  border: 1px solid var(--border); color: var(--dim); }
+.supply b { font-weight: 700; letter-spacing: .04em; }
+.supply.micro { color: var(--accent); border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.supply.small { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+.supply.mega, .supply.large { opacity: .7; }
+.supply.unknown { opacity: .55; font-style: italic; }

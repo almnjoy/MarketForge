@@ -294,8 +294,25 @@ def scan(client, conn, cfg=config):
         db.record_alert(conn, symbol=sym, kind="gainer", pct=pct, price_cents=int(price * 100),
                         headline=headline, url=url, note=note, score=score,
                         verdict=vlabel, catalyst_type=ctype, why=why)
+        # SUPPLY. The catalyst above is DEMAND; this is the other half. The same
+        # headline on a 14M-share company and a 24,000M-share company are not the
+        # same event, and until now this scan could not tell them apart.
+        # Annotation only - never gates an alert, never blocks on a slow SEC call.
+        supply = {}
+        if getattr(cfg, "ANNOTATE_SUPPLY", True):
+            try:
+                import fundamentals
+                supply = fundamentals.annotate(sym)
+            except Exception as e:
+                supply = {"supply_class": "unknown",
+                          "note": f"supply lookup failed: {str(e)[:60]}"}
+
         alerts.append({"symbol": sym, "pct": pct, "price": price, "score": score,
-                       "verdict": vlabel, "catalyst_type": ctype, "why": why})
+                       "verdict": vlabel, "catalyst_type": ctype, "why": why,
+                       "shares_outstanding": supply.get("shares_outstanding"),
+                       "shares_millions": supply.get("shares_millions"),
+                       "supply_class": supply.get("supply_class", "unknown"),
+                       "shares_as_of": supply.get("shares_as_of")})
 
         tag = f" [{score} {vlabel}]" if score is not None else ""
         print(f"[RADAR] {sym} +{pct:.1f}% @ ${price:,.2f}{tag}"

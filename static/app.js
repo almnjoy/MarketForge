@@ -462,11 +462,32 @@ async function loadOverview() {
       const fc = $('#feedChip');
       if (feed) {
         const rt = feed === 'sip';
-        fc.textContent = rt ? 'data: REAL-TIME (SIP)' : `data: ${feed.toUpperCase()} (free)`;
-        fc.style.color = rt ? 'var(--gain)' : '';
-        fc.style.borderColor = rt ? 'rgba(74,222,128,.45)' : '';
-        fc.title = rt ? 'Full consolidated tape, real time'
-                      : 'Free IEX feed: a slice of total volume. Subscribe to Alpaca real-time and rerun setup.py to switch.';
+        // The chip used to report which feed was CONFIGURED, which is not the
+        // question. The question is whether the number on screen is current.
+        // On the free plan REST cannot return the last 15 minutes at all, so
+        // without the live tap running, everything here is >=15 min old.
+        const tap = await J('/api/live').catch(() => null);
+        const live = tap && tap.connected && (tap.fresh_count || 0) > 0;
+        if (rt) {
+          fc.textContent = 'data: REAL-TIME (SIP)';
+          fc.title = 'Full consolidated tape, real time.';
+        } else if (live) {
+          fc.textContent = `data: LIVE tap · ${tap.fresh_count} sym`;
+          fc.title = `IEX websocket connected: ${tap.fresh_count} symbol(s) with a fresh print.\n`
+            + `Everything NOT in the tap still comes from REST, which on the free plan\n`
+            + `is blind to the last 15 minutes. IEX is ~2% of volume, so a quiet name\n`
+            + `may simply not print.`;
+        } else {
+          fc.textContent = 'data: IEX · 15-MIN DELAYED';
+          fc.title = 'The free plan\'s REST API cannot return the latest 15 minutes.\n'
+            + 'Every price on this screen is at least that old.\n\n'
+            + 'Fix (free): pip install websocket-client, then run\n'
+            + '  python bot/src/stream.py\n'
+            + 'to tap real-time IEX for up to 30 symbols.';
+        }
+        fc.style.color = rt || live ? 'var(--gain)' : 'var(--warn, var(--loss))';
+        fc.style.borderColor = rt || live ? 'rgba(74,222,128,.45)'
+                                          : 'color-mix(in srgb, var(--warn, var(--loss)) 45%, transparent)';
       }
       window._cfg = cfg;
     }
@@ -474,6 +495,31 @@ async function loadOverview() {
 }
 
 /* ---------- radar ---------- */
+/* Supply chip for a radar card.
+   A catalyst is DEMAND; share count is SUPPLY. "micro" next to a +45% move is
+   the single most useful thing on the card, and its absence used to be silent.
+   Says OUTSTANDING, not float, because that is what SEC gives - float subtracts
+   insider/restricted shares and needs a paid source. */
+const SUPPLY_HINT = {
+  micro: 'tiny supply - a real catalyst moves this violently, and it squeezes',
+  small: 'small supply - catalysts have real leverage here',
+  mid: 'moderate supply',
+  large: 'big supply - a headline moves this less',
+  mega: 'enormous supply - a headline is a rounding error',
+  unknown: 'no SEC share count (ETF, foreign issuer, or not filed)',
+};
+function supplyChip(r) {
+  const c = r.supply_class || 'unknown';
+  if (c === 'unknown' && r.shares_millions == null) {
+    return `<div class="supply unknown" title="${esc(SUPPLY_HINT.unknown)}">supply: unknown</div>`;
+  }
+  const m = r.shares_millions;
+  const txt = m >= 1000 ? `${(m / 1000).toFixed(1)}B` : `${m}M`;
+  return `<div class="supply ${esc(c)}" title="${esc(SUPPLY_HINT[c] || '')} · shares OUTSTANDING (not free float) as of ${esc(r.shares_as_of || '?')}">`
+    + `<b>${esc(c.toUpperCase())}</b> ${txt} shares`
+    + `<span class="dim"> outstanding</span></div>`;
+}
+
 async function loadRadar() {
   try {
     const radar = await J('/api/bot/radar');
@@ -494,6 +540,7 @@ async function loadRadar() {
           <span class="score ${(r.score ?? 0) >= 70 ? 'hi' : (r.score ?? 0) >= 40 ? 'mid' : ''}">${r.score ?? '--'}</span></div>
         ${now != null ? `<div class="livechip"><span class="p"></span>now ${fmt$(now)} ${since != null ? `<b class="${cls(since)}">${since >= 0 ? '+' : ''}${since.toFixed(1)}% since alert</b>` : ''}</div>` : ''}
         ${r.catalyst_type ? `<div class="dim" style="color:var(--accent);font-size:10px;text-transform:uppercase">${esc(r.catalyst_type)}</div>` : ''}
+        ${supplyChip(r)}
         ${r.why ? `<div class="why">${esc(r.why)}</div>` : ''}
         ${r.headline ? `<a href="${esc(r.url || '#')}" target="_blank">${host ? `<img src="https://www.google.com/s2/favicons?domain=${host}&sz=32" width="12" height="12" style="vertical-align:-1px"> ` : ''}${esc(r.headline)}</a>` : ''}
         <div class="foot"><span class="dim">${esc((r.ts || '').slice(5, 16).replace('T', ' '))}</span>

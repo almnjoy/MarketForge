@@ -1383,6 +1383,40 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"inbox": inbox, "outbox": outbox, "days": days,
                                "day": day, "resolved_day": want, "today": today})
 
+        if path == "/api/live":
+            # Is the real-time tap running, and how much of it is actually fresh?
+            # Freshness is computed HERE against the current clock, not read from
+            # the file's own age_s, which was only true at flush time.
+            p = BOT_HOME / "data" / "live-prices.json"
+            try:
+                d = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                return self._json({"running": False, "connected": False,
+                                   "fresh_count": 0, "prices": {},
+                                   "hint": "python bot/src/stream.py "
+                                           "(needs: pip install websocket-client)"})
+            now = time.time()
+            limit = float(d.get("stale_after_s") or 90)
+            rows, fresh = {}, 0
+            for sym, v in (d.get("prices") or {}).items():
+                epoch = v.get("epoch_ts")
+                age = (now - float(epoch)) if epoch else None
+                ok = age is not None and age <= limit
+                fresh += 1 if ok else 0
+                rows[sym] = {**v, "age_s": round(age, 1) if age is not None else None,
+                             "fresh": ok}
+            return self._json({
+                "running": (now - float(d.get("epoch") or 0)) < 30,
+                "connected": bool(d.get("connected")),
+                "feed": d.get("feed"),
+                "error": d.get("error"),
+                "stale_after_s": limit,
+                "fresh_count": fresh,
+                "total": len(rows),
+                "caveat": d.get("caveat"),
+                "prices": rows,
+            })
+
         if path == "/api/schedule":
             s = _sched_load()
             s["runs"] = _sched_state["runs"][:10]
