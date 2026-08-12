@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 
 import paper
 
@@ -85,14 +86,24 @@ def status():
         need = "sell" if q > 0 else "buy"
         size = abs(q)
         covered = float(guarded.get(p["symbol"], {}).get(need, 0.0))
-        has_exit = covered + 1e-6 >= size
+        gap = size - covered
+        has_exit = gap <= 1e-6
+        # Sub-share remainder. A trailing stop needs a whole share, so this
+        # slice is permanently untrailable - but the whole-share part of the
+        # SAME position can be, and usually is.
+        dust = frac and gap < 1.0
         flags = []
-        if frac:
-            flags.append("FRACTIONAL - cannot be trailed")
         if q < 0:
             flags.append("SHORT")
             shorts.append(p["symbol"])
-        if not has_exit and not frac:
+        if has_exit:
+            pass
+        elif dust:
+            # "FRACTIONAL - cannot be trailed" was flatly wrong here: CLW showed
+            # 9 of 9.136 already trailed while the flag implied none of it was.
+            flags.append(f"{covered:g}/{size:g} trailed, {gap:.4g} dust "
+                         f"(under one share, cannot be trailed)")
+        else:
             flags.append(f"{'PARTIAL' if covered else 'NO'} EXIT "
                          f"({covered:g}/{size:g} covered, needs a {need})")
             naked.append((p["symbol"], q, need, covered, size))
@@ -155,26 +166,53 @@ def trim(symbol, to_qty, assume_yes=False):
 
 
 def close_fractions(assume_yes=False):
-    """Close every fractional paper position. They can never carry a trailing
-    stop, so they are permanently unprotectable and pollute the record."""
+    """Close every position carrying a sub-share remainder.
+
+    THE 403 THIS FIXES: DELETE /v2/positions/CLW returned
+    `available 0.136, existing_qty 9.136, held_for_orders 9` - a trailing stop
+    was HOLDING the 9 whole shares, so only the dust was sellable and the close
+    was refused outright. Closing a protected position means cancelling its
+    protection first, which is a deliberate act and is stated as one.
+    """
     c, pos = _positions()
-    fracs = [p for p in pos if abs(float(p["qty"])) - int(abs(float(p["qty"]))) > 1e-9]
+    fracs = [p for p in pos
+             if abs(float(p["qty"])) - int(abs(float(p["qty"]))) > 1e-9]
     if not fracs:
         print("no fractional paper positions")
         return
-    print("fractional positions (unprotectable):")
+    guarded = _working(c)
+    print("positions with a sub-share remainder:")
     for p in fracs:
-        print(f"  {p['symbol']:<7}{float(p['qty']):>10g} @ ${p['avg_entry_cents']/100:.2f}")
+        q = float(p["qty"])
+        need = "sell" if q > 0 else "buy"
+        cov = float(guarded.get(p["symbol"], {}).get(need, 0.0))
+        note = (f"  ({cov:g} held by a working {need} - it will be CANCELLED)"
+                if cov else "")
+        print(f"  {p['symbol']:<7}{q:>12g} @ ${p['avg_entry_cents']/100:.2f}{note}")
     if not assume_yes:
-        if input("\nclose all of these? [y/N] ").strip().lower() != "y":
+        print("\nThis cancels any working exit on these names, then closes them.")
+        if input("proceed? [y/N] ").strip().lower() != "y":
             print("aborted")
             return
     for p in fracs:
+        sym = p["symbol"]
         try:
-            c._req("DELETE", c.trade_base, f"/v2/positions/{p['symbol']}")
-            print(f"  closed {p['symbol']}")
+            # Cancel first. Alpaca will not sell shares another order is holding.
+            try:
+                c._req("DELETE", c.trade_base, f"/v2/orders?symbol={sym}")
+            except Exception:
+                for o in (c._req("GET", c.trade_base, "/v2/orders",
+                                 params={"status": "open", "limit": 200}) or []):
+                    if o.get("symbol") == sym and o.get("id"):
+                        try:
+                            c._req("DELETE", c.trade_base, f"/v2/orders/{o['id']}")
+                        except Exception as e:
+                            print(f"  {sym}: could not cancel {o['id']}: {str(e)[:70]}")
+            time.sleep(1.0)          # cancellation is not instant
+            c._req("DELETE", c.trade_base, f"/v2/positions/{sym}")
+            print(f"  closed {sym}")
         except Exception as e:
-            print(f"  FAILED {p['symbol']}: {str(e)[:140]}")
+            print(f"  FAILED {sym}: {str(e)[:160]}")
 
 
 def protect(symbol, trail):
