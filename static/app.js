@@ -492,11 +492,21 @@ async function loadOverview() {
           fc.textContent = 'data: REAL-TIME (SIP)';
           fc.title = 'Full consolidated tape, real time.';
         } else if (live) {
-          fc.textContent = `data: LIVE tap · ${tap.fresh_count} sym`;
-          fc.title = `IEX websocket connected: ${tap.fresh_count} symbol(s) with a fresh print.\n`
+          // "LIVE tap - 1 sym" read as "the tap only got one symbol" and sent me
+          // hunting a bug that was not there: it was 1 of 5 SUBSCRIBED with a
+          // print inside the 90s window, at 8am, when IEX (~2% of volume) is
+          // nearly silent. One number where two were needed. Show the
+          // denominator so a low count reads as "quiet", not "broken".
+          const tot = tap.total || 0;
+          fc.textContent = `data: LIVE tap · ${tap.fresh_count}/${tot} fresh`;
+          fc.title = `IEX websocket connected, ${tot} symbol(s) subscribed, `
+            + `${tap.fresh_count} with a print in the last ${Math.round(tap.stale_after_s || 90)}s.\n\n`
+            + `A LOW COUNT IS NORMAL PRE-MARKET AND IN QUIET NAMES. IEX is ~2% of\n`
+            + `volume, so a symbol can be subscribed and simply not trade. Zero fresh\n`
+            + `is not the same as disconnected - this chip only turns green when the\n`
+            + `socket is up.\n\n`
             + `Everything NOT in the tap still comes from REST, which on the free plan\n`
-            + `is blind to the last 15 minutes. IEX is ~2% of volume, so a quiet name\n`
-            + `may simply not print.`;
+            + `is blind to the last 15 minutes.`;
         } else {
           fc.textContent = 'data: IEX · 15-MIN DELAYED';
           fc.title = 'The free plan\'s REST API cannot return the latest 15 minutes.\n'

@@ -423,6 +423,14 @@ BRIDGE_TIMEOUT = int(_cfg.get("bridge_timeout", 150))   # legacy key, no longer 
 # fixed deadline killed healthy turns whose panels had already landed on disk,
 # which read as "it failed" and got the same work asked for twice.
 BRIDGE_IDLE_TIMEOUT = int(_cfg.get("bridge_idle_timeout", 90))   # quiet seconds = hung
+# ...but a tool that is RUNNING emits nothing either, and that is the hole the
+# idle timeout left. A scan that takes 123s produces one tool_use event and then
+# silence until it returns, which is byte-for-byte what a hang looks like. The
+# 2026-08-13 morning routine died at 306s this way, mid-Bash, with the dock
+# showing "Bash - 123s" - the UI knew the turn was alive while the watchdog
+# killed it for being quiet. Silence WITH a tool in flight gets its own, longer
+# allowance; silence with nothing running is still 90s.
+BRIDGE_TOOL_TIMEOUT = int(_cfg.get("bridge_tool_timeout", 600))  # one tool call
 BRIDGE_MAX_S = int(_cfg.get("bridge_max_s", 900))                # absolute ceiling
 _bridge = {"status": "off", "turns": 0, "last_ms": 0, "error": ""}
 _bridge_current = {"proc": None}   # the in-flight claude process, so Stop can kill it
@@ -591,13 +599,20 @@ def _bridge_turn(new_texts):
     # so a turn that is genuinely working is never killed for taking a while.
     started = time.time()
     last_event = [started]
+    # [name] of the tool currently executing, or [None]. Set when a tool_use
+    # event arrives, cleared by the NEXT line off the stream (which is the tool
+    # returning). While this is set, silence is expected work, not a hang.
+    in_tool = [None]
     killed = {"why": None}
 
     def _watchdog():
         while proc.poll() is None:
             now = time.time()
-            if now - last_event[0] > BRIDGE_IDLE_TIMEOUT:
-                killed["why"] = f"went quiet for {BRIDGE_IDLE_TIMEOUT}s"
+            tool = in_tool[0]
+            limit = BRIDGE_TOOL_TIMEOUT if tool else BRIDGE_IDLE_TIMEOUT
+            if now - last_event[0] > limit:
+                killed["why"] = (f"let {tool} run {limit}s with no output"
+                                 if tool else f"went quiet for {limit}s")
                 _kill_proc(proc)
                 return
             if now - started > BRIDGE_MAX_S:
@@ -614,6 +629,7 @@ def _bridge_turn(new_texts):
         text_parts, result_text = [], None
         for line in _iter_lines(proc):
             last_event[0] = time.time()      # proof of life; resets the watchdog
+            in_tool[0] = None                # a line means the tool came back
             line = line.strip()
             if not line:
                 continue
@@ -636,6 +652,8 @@ def _bridge_turn(new_texts):
                         hint = hint.replace(str(ROOT), "").strip("\\/")[:56]
                         _bridge["steps"] = _bridge.get("steps", 0) + 1
                         _bridge["step"] = f"{blk.get('name', 'tool')}{' · ' + hint if hint else ''}"
+                        # About to go silent for as long as this tool takes.
+                        in_tool[0] = blk.get("name", "a tool")
                     elif blk.get("type") == "text" and blk.get("text"):
                         text_parts.append(blk["text"])
             elif et == "result":
