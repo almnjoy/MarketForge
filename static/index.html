@@ -35,14 +35,21 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
 <div id="tape"><div class="tape-track" id="tapeTrack"><span class="tick dim">loading tape...</span></div></div>
 
 <nav id="tabs">
-  <button data-tab="overview" class="on">OVERVIEW</button>
-  <button data-tab="paper">PAPER</button>
-  <button data-tab="radar">RADAR</button>
+  <button data-lane="daily">DAILY TRADER</button>
+  <button data-lane="live" class="on">LIVE TRADER</button>
+  <button data-lane="paper">PAPER TRADER</button>
   <button data-tab="workbench">WORKBENCH</button>
   <button data-tab="saved">SAVED</button>
   <button data-tab="journal">JOURNAL</button>
   <button data-tab="copilot">COPILOT</button>
   <button data-tab="admin">ADMIN</button>
+</nav>
+<!-- Lane sub-nav. One bar, relabelled per lane, because three near-identical
+     bars is three places to forget to change something. -->
+<nav id="lanetabs" class="subtabs">
+  <button data-lanesub="overview" class="on">Overview</button>
+  <button data-lanesub="radar">Radar</button>
+  <button data-lanesub="settings">Settings</button>
 </nav>
 
 <main>
@@ -187,6 +194,89 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
   </section>
 
 <!-- WORKBENCH: Claude Code's live canvas -->
+  <!-- ===================== NEW LANE VIEWS =====================
+       The LIVE lane reuses the panes that already existed (view-overview,
+       view-radar) rather than having its content moved into a new wrapper -
+       moving several hundred lines of working DOM to change a menu is a much
+       bigger risk than the menu is worth. The router in app.js maps
+       (lane, subtab) -> an existing view id. These sections cover only what is
+       genuinely new. -->
+
+  <section id="view-daily-overview" class="view">
+    <h2>Daily Trader</h2>
+    <p class="mut">Brain 3 - intraday momentum, low float, $0.50-$20.
+      In and out the same session.</p>
+    <div class="card" style="margin-top:14px">
+      <b>This lane is not wired to a live scanner yet, and that is a data
+        problem rather than a code one.</b>
+      <p class="mut" style="margin:8px 0 0">
+        Ross Cameron's edge is SELECTION - finding today's strongest mover out of
+        thousands of names, in real time. The free Alpaca plan gives 15 real-time
+        IEX symbols that you choose in advance, so it cannot answer "what is
+        moving right now" at all. That is what Algo Trader Plus buys.</p>
+      <p class="mut" style="margin:8px 0 0">
+        What DOES work today, free: the pattern engine runs over historical
+        minute bars, because only the last 15 minutes are withheld. Measure the
+        setup on real sessions before paying for a feed to trade it.</p>
+      <pre class="mono" style="margin-top:10px">python bot\src\backtest_daily.py --symbols OFAL,COOL --days 20</pre>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <b>Gates</b>
+      <table class="mono" style="margin-top:8px">
+        <tr><td>price band</td><td class="r">$0.50 - $20.00</td></tr>
+        <tr><td>relative volume</td><td class="r">5x its OWN median day</td></tr>
+        <tr><td>session liquidity</td><td class="r">$1M traded TODAY</td></tr>
+        <tr><td>minimum stop</td><td class="r">5c or 0.5%, whichever is larger</td></tr>
+      </table>
+      <p class="mut" style="margin:8px 0 0">Relative volume, not a 20-day average:
+        an average test rejects every gapper on the strength of its quiet days.
+        The stop floor exists because a one-cent stop on a $65 stock is not a
+        tight stop, it is the spread.</p>
+    </div>
+  </section>
+
+  <section id="view-daily-radar" class="view">
+    <h2>Daily radar</h2>
+    <div class="card">
+      <b>Not built.</b>
+      <p class="mut" style="margin:8px 0 0">
+        <code>scan_daily.py</code> is the next scanner. It needs a market-wide
+        snapshot to find movers, which the current data plan cannot provide -
+        see the note on the Overview tab. The pattern engine
+        (<code>daily_play.py</code>) and its backtest are done and tested; what
+        is missing is the thing that feeds them candidates.</p>
+    </div>
+  </section>
+
+  <section id="view-paper-radar" class="view">
+    <h2>Paper radar</h2>
+    <div class="card">
+      <b>Not built as a separate scanner yet.</b>
+      <p class="mut" style="margin:8px 0 0">
+        Paper shares the swing brain with the Live lane, so until
+        <code>scan_paper.py</code> exists it has nothing of its own to scan -
+        it mirrors what Live finds. The difference that matters is not what it
+        scans but what it does with it: Live stages and waits for a click, Paper
+        fires automatically.</p>
+    </div>
+  </section>
+
+  <section id="view-lane-settings" class="view">
+    <h2 id="laneSettingsTitle">Lane settings</h2>
+    <div class="card">
+      <div id="laneBrain" class="mut">loading...</div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <b>Where this lane's brain lives</b>
+      <p class="mut" style="margin:8px 0 0">
+        <code id="laneBrainPath" class="mono"></code></p>
+      <p class="mut" style="margin:8px 0 0">
+        Markdown, read by the copilot when a question routes to this lane. It is
+        gitignored on purpose - it is your playbook, not the product. Templates
+        ship in <code>TheTradingBrains/_templates/</code>.</p>
+    </div>
+  </section>
+
   <section id="view-workbench" class="view">
     <div class="wb-bar">
       <span class="dim">panels/ renders live - ask the copilot or CC to build/transform boards. Drag a card's corner to resize. <span id="wbCount"></span></span>

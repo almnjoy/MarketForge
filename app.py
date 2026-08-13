@@ -1457,6 +1457,27 @@ class Handler(BaseHTTPRequestHandler):
                 "prices": rows,
             })
 
+        if path == "/api/brain":
+            # A lane's brain doc, for its Settings tab. READ ONLY, and it refuses
+            # to leave the brains directory: `lane` arrives from a query string,
+            # so "../../bot/.env" is a thing someone could type. Resolve, then
+            # confirm the resolved path is still inside the folder.
+            lane = urllib.parse.parse_qs(qs).get("lane", [""])[0]
+            root = (WORK / "TheTradingBrains").resolve()
+            try:
+                target = (root / lane / "00-BRAIN.md").resolve()
+                if not str(target).startswith(str(root)):
+                    return self._json({"ok": False, "error": "outside the brains folder"}, 400)
+                if not target.exists():
+                    tmpl = root / "_templates" / lane / "00-BRAIN.md"
+                    return self._json({"ok": False, "error": "no brain written yet",
+                                       "template": str(tmpl) if tmpl.exists() else None})
+                return self._json({"ok": True, "lane": lane,
+                                   "path": str(target),
+                                   "text": target.read_text(encoding="utf-8")[:20000]})
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:200]}, 500)
+
         if path == "/api/schedule":
             s = _sched_load()
             s["runs"] = _sched_state["runs"][:10]

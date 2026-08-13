@@ -138,8 +138,101 @@ hookLinks(document);
 })();
 
 /* ---------- tabs ---------- */
-document.querySelectorAll('#tabs button').forEach((b) => b.onclick = () => {
+/* ------------------------------------------------------------------ LANES
+   Three lanes, two brains. Daily Trader is Brain 3 and stands alone; Live and
+   Paper SHARE the swing brain and differ only in venue and behaviour - Live
+   stages and waits for a click, Paper fires automatically as the study twin.
+
+   The router maps (lane, subtab) to a view id. The Live lane deliberately points
+   at the panes that already existed rather than having its content relocated:
+   moving several hundred lines of working DOM to change a menu is a far bigger
+   risk than the menu is worth, and the id a pane has is not what makes it that
+   lane's pane. */
+const LANES = {
+  daily: {
+    label: 'Daily Trader', brain: 'DayTrader',
+    blurb: 'Brain 3 - intraday momentum, low float, $0.50-$20.',
+    views: { overview: 'view-daily-overview', radar: 'view-daily-radar',
+             settings: 'view-lane-settings' },
+  },
+  live: {
+    label: 'Live Trader', brain: 'MoneyTrader',
+    blurb: 'The swing brain on real money. Every entry STAGES and waits for you.',
+    views: { overview: 'view-overview', radar: 'view-radar',
+             settings: 'view-lane-settings' },
+  },
+  paper: {
+    label: 'Paper Trader', brain: 'PaperTrader',
+    blurb: 'The same swing brain, fired automatically. The study twin of Live, '
+         + 'and the only venue that can short while the live account is under $2k.',
+    views: { overview: 'view-paper', radar: 'view-paper-radar',
+             settings: 'view-lane-settings' },
+  },
+};
+let LANE = 'live', LANE_SUB = 'overview';
+
+function showLane(lane, sub) {
+  LANE = lane in LANES ? lane : 'live';
+  LANE_SUB = sub || 'overview';
+  const cfg = LANES[LANE];
+  const id = cfg.views[LANE_SUB] || cfg.views.overview;
+
+  document.querySelectorAll('#tabs button').forEach(
+    (x) => x.classList.toggle('on', x.dataset.lane === LANE));
+  document.querySelectorAll('#lanetabs button').forEach(
+    (x) => x.classList.toggle('on', x.dataset.lanesub === LANE_SUB));
+  const bar = document.querySelector('#lanetabs');
+  if (bar) bar.style.display = '';
+  document.querySelectorAll('.view').forEach((v) => v.classList.toggle('on', v.id === id));
+
+  if (LANE_SUB === 'settings') loadLaneSettings();
+  else if (LANE === 'live' && LANE_SUB === 'radar') {
+    const on = document.querySelector('#view-radar .subtabs button.on');
+    const s = on ? on.dataset.sub : 'catalyst';
+    if (s === 'retail') loadReddit(); else if (s === 'brief') loadBrief();
+    else if (s === 'scoring') loadScanlog(); else loadRadar();
+  } else if (LANE === 'live' && LANE_SUB === 'overview') { loadChart(); }
+  else if (LANE === 'paper' && LANE_SUB === 'overview') { loadPaper(); }
+}
+
+async function loadLaneSettings() {
+  const cfg = LANES[LANE];
+  const t = $('#laneSettingsTitle'), p = $('#laneBrainPath'), b = $('#laneBrain');
+  if (t) t.textContent = cfg.label + ' - settings';
+  if (p) p.textContent = 'TheTradingBrains/' + cfg.brain + '/00-BRAIN.md';
+  if (!b) return;
+  b.innerHTML = '<b>' + cfg.label + '</b><br><span class="mut">' + cfg.blurb + '</span>';
+  try {
+    const r = await fetch('/api/brain?lane=' + encodeURIComponent(cfg.brain));
+    const j = await r.json();
+    if (j.ok && j.text) {
+      b.innerHTML += '<pre class="mono" style="white-space:pre-wrap;margin-top:12px">'
+        + j.text.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))
+        + '</pre>';
+    } else {
+      // Say which file and how to make it, rather than "not found".
+      b.innerHTML += '<p class="mut" style="margin-top:12px">No brain written for this '
+        + 'lane yet. Copy the template to start one:</p>'
+        + '<pre class="mono">copy TheTradingBrains\\_templates\\' + cfg.brain
+        + '\\*.md TheTradingBrains\\' + cfg.brain + '\\</pre>';
+    }
+  } catch (e) {
+    b.innerHTML += '<p class="mut" style="margin-top:12px">Could not read the brain file ('
+      + String(e).slice(0, 80) + ').</p>';
+  }
+}
+
+document.querySelectorAll('#tabs button[data-lane]').forEach(
+  (b) => b.onclick = () => showLane(b.dataset.lane, LANE_SUB));
+document.querySelectorAll('#lanetabs button').forEach(
+  (b) => b.onclick = () => showLane(LANE, b.dataset.lanesub));
+
+document.querySelectorAll('#tabs button[data-tab]').forEach((b) => b.onclick = () => {
   document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x === b));
+  // The lane sub-nav belongs to the lanes. Leaving it visible over WORKBENCH or
+  // ADMIN implies those have Overview/Radar/Settings, which they do not.
+  const bar = document.querySelector('#lanetabs');
+  if (bar) bar.style.display = 'none';
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('on', v.id === 'view-' + b.dataset.tab));
   // admin is a snapshot, not a live poll - refresh it when you open the tab
   if (b.dataset.tab === 'admin') loadAdmin();
@@ -686,7 +779,7 @@ $('#radarRefresh').onclick = async () => {
 window.chartTo = (sym) => {
   chartSym = sym; $('#chartSym').value = sym;
   chartPinned = true; localStorage.setItem('mfChartSym', sym);
-  document.querySelector('[data-tab=overview]').click(); loadChart();
+  showLane('live', 'overview'); loadChart();
 };
 
 /* ---------- retail (reddit) ---------- */
@@ -2028,7 +2121,19 @@ function renderDock() {
 $('#dockPill').onclick = () => { $('#dockList').classList.toggle('hidden'); renderDock(); };
 
 /* ---------- command palette (Ctrl+K): commands first, copilot for everything else ---------- */
-const tabTo = (name) => document.querySelector(`[data-tab=${name}]`)?.click();
+const LANE_ROUTES = {
+  overview: ['live', 'overview'], paper: ['paper', 'overview'],
+  radar: ['live', 'radar'], retail: ['live', 'radar'],
+  daily: ['daily', 'overview'],
+};
+/* Lanes are not tabs any more. Without this every palette entry pointing at a
+   lane would resolve to null and be swallowed by the ?. - a menu item that looks
+   live and does nothing. */
+const tabTo = (name) => {
+  const r = LANE_ROUTES[name];
+  if (r) return showLane(r[0], r[1]);
+  document.querySelector(`[data-tab=${name}]`)?.click();
+};
 async function palChat(text) {
   await J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
   tabTo('copilot'); loadChat();
@@ -2046,9 +2151,11 @@ async function clearBoard() {
   loadPanels(true); loadSavedList();
 }
 const PAL_STATIC = [
-  { k: 'go: overview', ico: '▦', run: () => tabTo('overview') },
-  { k: 'go: catalyst radar', ico: '▦', run: () => tabTo('radar') },
-  { k: 'go: retail radar (reddit)', ico: '▦', run: () => tabTo('retail') },
+  { k: 'go: live trader', ico: '▦', run: () => showLane('live', 'overview') },
+  { k: 'go: paper trader', ico: '▦', run: () => showLane('paper', 'overview') },
+  { k: 'go: daily trader', ico: '▦', run: () => showLane('daily', 'overview') },
+  { k: 'go: live radar', ico: '▦', run: () => showLane('live', 'radar') },
+  { k: 'go: retail radar (reddit)', ico: '▦', run: () => { showLane('live', 'radar'); document.querySelector('#view-radar .subtabs button[data-sub=retail]')?.click(); } },
   { k: 'go: workbench', ico: '▦', run: () => tabTo('workbench') },
   { k: 'go: saved pages', ico: '▦', run: () => tabTo('saved') },
   { k: 'go: copilot', ico: '▦', run: () => tabTo('copilot') },
@@ -2058,7 +2165,7 @@ const PAL_STATIC = [
   { k: 'go: usage / cost', ico: '$', run: () => subTo('usage') },
   { k: 'go: admin', ico: '▦', run: () => subTo('status') },
   { k: 'change skin / theme', ico: '◧', run: () => subTo('appearance') },
-  { k: 're-scan radar', ico: '⟳', run: () => { tabTo('radar'); $('#radarRefresh').click(); } },
+  { k: 're-scan radar', ico: '⟳', run: () => { showLane('live', 'radar'); $('#radarRefresh').click(); } },
   { k: 'save board', ico: '💾', run: () => { tabTo('workbench'); $('#wbSaveName').focus(); } },
   { k: 'clear board (autosaves first)', ico: '🧹', run: clearBoard },
   { k: 'hot mic toggle', ico: '🎙', run: () => $('#hotMic').click() },
