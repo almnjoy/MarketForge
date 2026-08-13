@@ -17,55 +17,18 @@ import time
 import types
 
 import db
-import radar
+import radar          # the shim; kept to prove the old entry point still works
 
 
-def _fresh_lock():
-    radar.LOCK_PATH.unlink(missing_ok=True)
-
-
-def test_second_scan_is_refused_while_one_runs():
-    """THE TEST. Two overlapping scans must not both proceed."""
-    _fresh_lock()
-    with radar._ScanLock():
-        try:
-            with radar._ScanLock():
-                raise AssertionError("a second scan was allowed to start")
-        except radar.ScanBusy as e:
-            assert "another scan" in str(e), str(e)
-    _fresh_lock()
-
-
-def test_lock_releases_on_exit():
-    _fresh_lock()
-    with radar._ScanLock():
-        assert radar.LOCK_PATH.exists()
-    assert not radar.LOCK_PATH.exists(), "lock survived the scan"
-
-
-def test_lock_releases_even_when_the_scan_raises():
-    """A crashed scan must not wedge the radar until someone deletes a file."""
-    _fresh_lock()
-    try:
-        with radar._ScanLock():
-            raise RuntimeError("scan blew up")
-    except RuntimeError:
-        pass
-    assert not radar.LOCK_PATH.exists()
-
-
-def test_a_stale_lock_is_cleared_not_obeyed():
-    """The desk gets killed mid-scan. The next run must not be blocked forever."""
-    _fresh_lock()
-    radar.LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    radar.LOCK_PATH.write_text("99999")
-    old = time.time() - (radar.LOCK_STALE_S + 60)
-    import os
-    os.utime(radar.LOCK_PATH, (old, old))
-    with radar._ScanLock():           # must not raise
-        pass
-    _fresh_lock()
-
+# ---------------------------------------------------------------------------
+# THE LOCK AND SCAN-LOG TESTS THAT USED TO LIVE HERE MOVED.
+# Their subject moved to scanner_core.py in the 2026-08-13 lane split, and the
+# per-lane versions in test_scanner_core.py are strictly better: they also assert
+# that one lane's lock does not block another, which is the property the split
+# exists to create and which could not be expressed while the paths were globals.
+# Duplicating them here would mean two copies drifting - the exact thing the
+# extraction was done to prevent.
+# ---------------------------------------------------------------------------
 
 def test_claim_then_update_leaves_one_row_not_two():
     """The radar claims a symbol BEFORE scoring and fills the row in after. If
@@ -149,17 +112,6 @@ def test_brief_falls_back_to_machine_voice_without_a_model():
         llm.complete = orig
 
 
-def test_scanlog_records_skips_with_reasons():
-    rows = [{"symbol": "SMCL", "decision": "skipped",
-             "reason": "$0.40M avg daily dollar volume, under the $1M floor"},
-            {"symbol": "HQI", "decision": "alerted", "reason": "earnings beat"}]
-    radar._scanlog_write(rows, "2026-08-12T10:00:00")
-    import json
-    d = json.loads(radar.SCANLOG_PATH.read_text(encoding="utf-8"))
-    assert d["alerted"] == 1 and d["skipped"] == 1, d
-    assert any("floor" in r["reason"] for r in d["rows"])
-
-
 if __name__ == "__main__":
     passed = failed = 0
     for name, fn in sorted(globals().items()):
@@ -171,6 +123,5 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"  FAIL {name}: {e.__class__.__name__}: {e}")
                 failed += 1
-    radar.LOCK_PATH.unlink(missing_ok=True)
     print(f"\n{passed} passed, {failed} failed")
     raise SystemExit(1 if failed else 0)
