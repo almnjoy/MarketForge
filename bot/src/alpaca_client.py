@@ -137,6 +137,59 @@ class AlpacaClient:
         } for b in raw]
         return bars[-limit:]
 
+    def get_intraday_bars(self, symbol, timeframe="1Min", start=None, end=None,
+                          limit=10000, session_date=None) -> list:
+        """Minute bars, ascending, prices in CENTS. This is Brain 3's whole input.
+
+        THE FREE-PLAN RULE THAT BITES: Basic cannot query the last 15 minutes. Ask
+        for it and Alpaca returns `subscription does not permit querying recent
+        SIP data` - a 403, not an empty list, so a naive caller reads it as "the
+        API is broken" rather than "you asked for something your plan excludes."
+
+        So on a non-SIP feed `end` is clamped to 16 minutes ago automatically.
+        HISTORY IS NOT RESTRICTED - yesterday, last week, last quarter all come
+        back complete and free. That is what makes the day-lane pattern testable
+        before paying for a live feed: build against the past, then decide.
+
+        session_date="YYYY-MM-DD" is the convenience form - one full RTH session,
+        09:30-16:00 ET, which is the unit a day-trading backtest actually wants.
+        """
+        feed = config._get("ALPACA_DATA_FEED", "iex")
+        if session_date:
+            # ET offset is -04:00 in DST, -05:00 otherwise. Asking for the whole
+            # calendar day in UTC and letting the API bound it is simpler and does
+            # not silently drop the last half hour when the offset guess is wrong.
+            start = f"{session_date}T00:00:00Z"
+            end = f"{session_date}T23:59:59Z"
+        if start is None:
+            start = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if str(feed).lower() != "sip":
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=16)
+            cutoff_s = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+            if end is None or end > cutoff_s:
+                end = cutoff_s
+        raw, page_token = [], None
+        while True:
+            params = {"timeframe": timeframe, "limit": 10000, "feed": feed,
+                      "adjustment": "split", "start": start, "end": end, "sort": "asc"}
+            if page_token:
+                params["page_token"] = page_token
+            data = self._req("GET", self.data_base, f"/v2/stocks/{symbol}/bars",
+                             params=params)
+            raw.extend(data.get("bars") or [])
+            page_token = data.get("next_page_token")
+            if not page_token or len(raw) >= limit * 4:
+                break
+        bars = [{
+            "t": b["t"],
+            "o": dollars_to_cents(b["o"]),
+            "h": dollars_to_cents(b["h"]),
+            "l": dollars_to_cents(b["l"]),
+            "c": dollars_to_cents(b["c"]),
+            "v": int(b["v"]),
+        } for b in raw]
+        return bars[-limit:]
+
     def get_latest_price(self, symbol) -> int:
         feed = config._get("ALPACA_DATA_FEED", "iex")
         data = self._req("GET", self.data_base, f"/v2/stocks/{symbol}/trades/latest",

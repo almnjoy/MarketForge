@@ -130,10 +130,11 @@ DEFAULT_UNIVERSE = [
 ]
 MAX_CANDIDATES = int(_get("MAX_CANDIDATES", 8))     # keep the LLM analysis loop bounded
 MIN_PRICE_CENTS = int(_get("MIN_PRICE_CENTS", 500))     # skip sub-$5 names
-# Liquidity floor. NOTE: the free IEX feed sees only a slice of total volume, so
-# dollar-volume reads low; this default is IEX-scaled. On the paid SIP feed
-# (ALPACA_DATA_FEED=sip) raise it toward ~20M for a true consolidated floor.
-MIN_AVG_DOLLAR_VOLUME = float(_get("MIN_AVG_DOLLAR_VOLUME", 2_000_000))
+# Liquidity floor for the long screen. Feed-scaled for the same reason the radar's
+# is (see _feed_scaled below): the note here used to say "raise it toward ~20M on
+# SIP", which is correct advice that nobody would ever remember to follow.
+# Defined further down, after DATA_FEED is known.
+MIN_AVG_DOLLAR_VOLUME = None   # set below
 
 # --- Signal params (swing / trend framework) -------------------------------
 SMA_FAST = int(_get("SMA_FAST", 50))
@@ -253,11 +254,65 @@ RADAR_MIN_MOVE_PCT = float(_get("RADAR_MIN_MOVE_PCT", 5.0))   # percent, e.g. 5 
 # Price floor filters out the low-float penny/halted junk that dominates raw
 # top-movers lists (the pump-and-dumps, not real catalysts). Default $3.
 RADAR_MIN_PRICE_CENTS = int(_get("RADAR_MIN_PRICE_CENTS", 300))
+# --- FEED AWARENESS --------------------------------------------------------
+# THE TRAP THIS EXISTS TO CLOSE: a dollar-volume floor is calibrated to the feed
+# that measured it. IEX is a few percent of the consolidated tape, so the SAME
+# stock on the SAME day reports roughly an order of magnitude more volume on SIP.
+# Flip ALPACA_DATA_FEED=iex -> sip with a hand-set floor and nothing errors, the
+# scan still runs, the board still fills - and the floor has silently stopped
+# filtering anything. Paying $99 to make a gate stop working is the kind of
+# failure that only shows up as "why is the board full of junk again."
+#
+# Same shape as everything else this desk has gotten wrong: a number that was
+# true when it was written and reads as current forever after.
+DATA_FEED = (_get("ALPACA_DATA_FEED", "iex") or "iex").strip().lower()
+IS_SIP = DATA_FEED == "sip"
+
+
+def _feed_scaled(name, iex_default, sip_default):
+    """An explicit env value always wins, but never silently when it looks stale."""
+    raw = _get(name, None)
+    default = sip_default if IS_SIP else iex_default
+    if raw in (None, ""):
+        return float(default)
+    val = float(raw)
+    other = iex_default if IS_SIP else sip_default
+    # Set explicitly, but calibrated for the feed you are NOT on.
+    if IS_SIP and val <= other * 3:
+        print(f"[config] {name}={val:,.0f} looks IEX-calibrated but the feed is SIP. "
+              f"SIP reports far more volume for the same stock, so this floor will "
+              f"pass almost everything. Consider ~{sip_default:,.0f}.")
+    elif (not IS_SIP) and val >= sip_default / 3:
+        print(f"[config] {name}={val:,.0f} looks SIP-calibrated but the feed is IEX. "
+              f"IEX sees a fraction of the tape, so this floor will reject almost "
+              f"everything. Consider ~{iex_default:,.0f}.")
+    return val
+
+
 # Liquidity floor on the RADAR. The long screen has had one forever
 # (MIN_AVG_DOLLAR_VOLUME); the radar had none, so it surfaced names nobody could
-# trade at size. $1M to start - deliberately permissive, tighten once the scan
-# log shows what it is actually rejecting. 0 disables.
-RADAR_MIN_DOLLAR_VOLUME = float(_get("RADAR_MIN_DOLLAR_VOLUME", 1_000_000))
+# trade at size. Deliberately permissive - tighten once the scan log shows what it
+# is actually rejecting. 0 disables.
+RADAR_MIN_DOLLAR_VOLUME = _feed_scaled("RADAR_MIN_DOLLAR_VOLUME", 1_000_000, 30_000_000)
+
+# Websocket budget. Basic caps SUBSCRIPTIONS (not symbols) at 30, and trades+quotes
+# cost one each - which is why 16 symbols returned "405 symbol limit exceeded".
+# Algo Trader Plus REMOVES the symbol cap, so leaving this at 30 after upgrading
+# means paying for an unlimited feed and still watching fifteen names. The SIP
+# number below is a practical ceiling for one connection, not a plan limit.
+STREAM_MAX_SUBSCRIPTIONS = int(_feed_scaled("STREAM_MAX_SUBSCRIPTIONS", 30, 400))
+
+# The long screen's floor, now that DATA_FEED is known. Same scaling, same reason.
+MIN_AVG_DOLLAR_VOLUME = _feed_scaled("MIN_AVG_DOLLAR_VOLUME", 2_000_000, 50_000_000)
+
+
+def feed_banner():
+    """One line, printed at startup, so the feed is never a thing you assume."""
+    if IS_SIP:
+        return ("[feed] SIP - full consolidated tape, real time. REST is no longer "
+                "blind to the last 15 minutes; websocket symbol cap removed.")
+    return ("[feed] IEX - ~2% of consolidated volume, and REST cannot return the "
+            "last 15 minutes. Dollar volumes read LOW; floors are IEX-scaled.")
 # Drop leveraged/inverse wrappers from the gainer universe. CWVX/CRWG/CRWU all
 # wrap CRWV and NBIL/NBIG/NBEX all wrap NBIS, so the board showed two ideas
 # seven times and ranked the wrapper above the company. Set false to see them.
