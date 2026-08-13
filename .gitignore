@@ -44,6 +44,10 @@ research/
 # personal trading playbooks - not product
 BRAIN-*.md
 staged-trade.json
+# scheduler state: YOUR cadence plus last_run_ts. Shipping it would hand a
+# new user someone else's schedule AND a timestamp the due-check reads, so
+# their first scan would look already-run.
+schedule.json
 
 # personal agent-lane charter - how ONE person works, not product
 .claude/SCOPED-SPACE-RULES.md
