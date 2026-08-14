@@ -1610,6 +1610,35 @@ class Handler(BaseHTTPRequestHandler):
                 "prices": rows,
             })
 
+        if path == "/api/endpoints":
+            # WHAT CAN I CALL? 2026-08-14: the copilot reported "no paper endpoint
+            # on the dashboard API" and fell back to quoting the journal instead of
+            # reading the account - while paper/overview, paper/status and
+            # paper/unprotected were all sitting in BOT_GET. It guessed a path,
+            # got a 404, and reported the 404 as a fact about the system.
+            #
+            # A 404 saying "endpoint not allowed" tells you that ONE guess failed.
+            # It does not tell you what would have worked. This does.
+            return self._json({
+                "ok": True,
+                "note": "GET /api/bot/<name> proxies to the engine for any name "
+                        "in bot_get. Everything else here is served by the "
+                        "dashboard itself.",
+                "bot_get": sorted(BOT_GET),
+                "examples": {
+                    "paper account + shadow book": "/api/bot/paper/overview",
+                    "is paper linked": "/api/bot/paper/status",
+                    "paper positions with no exit": "/api/bot/paper/unprotected",
+                    "live positions": "/api/bot/positions",
+                    "broker-side orders (not the local ledger)": "/api/bot/broker/orders",
+                    "last scan's decisions incl. rejects": "/api/bot/scanlog",
+                },
+                "dashboard": sorted([
+                    "/api/live", "/api/schedule", "/api/plan", "/api/changed",
+                    "/api/brain?lane=<Lane>", "/api/endpoints",
+                ]),
+            })
+
         if path == "/api/brain":
             # A lane's brain doc, for its Settings tab. READ ONLY, and it refuses
             # to leave the brains directory: `lane` arrives from a query string,

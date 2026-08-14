@@ -264,8 +264,16 @@ document.querySelectorAll('#tabs button[data-tab]').forEach((b) => b.onclick = (
    This used to select '#subtabs button' and '.subview' globally, which was fine
    while ADMIN was the only group. RADAR is a second one, and a global selector
    would have made clicking Catalyst also switch the admin pane underneath.
-   Now each nav only touches subviews inside its own <section>. */
-document.querySelectorAll('nav.subtabs').forEach((nav) => {
+   Now each nav only touches subviews inside its own <section>.
+
+   :not(#lanetabs) IS LOAD-BEARING. The lane bar reuses the .subtabs LOOK but not
+   its behaviour - it switches whole views, not subviews inside a section. Without
+   the exclusion this loop matched it too, and since both bind with `b.onclick =`
+   rather than addEventListener, the later assignment silently replaced showLane.
+   The button still highlighted, so it looked wired while doing nothing. Any future
+   nav that needs the pill styling without this behaviour must be excluded here or
+   it will fail the same quiet way. */
+document.querySelectorAll('nav.subtabs:not(#lanetabs)').forEach((nav) => {
   const scope = nav.closest('section') || document;
   nav.querySelectorAll('button').forEach((b) => b.onclick = () => {
     nav.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));

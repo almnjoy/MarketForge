@@ -85,13 +85,45 @@ check("two loads are two SNAPSHOTS, not two names for one module",
 
 print("\nfloors scale with the feed")
 
+# Test _feed_scaled DIRECTLY rather than round-tripping through a module reload.
+# THE TRAP: config._load_dotenv() copies bot/.env into os.environ at import, so a
+# test that pops a variable and reloads gets it handed straight back. This file
+# passed off-mount (no .env) and failed on it (RADAR_MIN_DOLLAR_VOLUME=3000000) -
+# an environment-dependent test, which is a test that lies half the time.
 iex, _ = load("iex")
 sip, _ = load("sip")
-check("the radar floor rises on SIP",
-      sip.RADAR_MIN_DOLLAR_VOLUME > iex.RADAR_MIN_DOLLAR_VOLUME * 5,
-      f"iex {iex.RADAR_MIN_DOLLAR_VOLUME:,.0f} vs sip {sip.RADAR_MIN_DOLLAR_VOLUME:,.0f}")
-check("the long screen's floor rises on SIP",
-      sip.MIN_AVG_DOLLAR_VOLUME > iex.MIN_AVG_DOLLAR_VOLUME * 5)
+import config as _c
+_c.IS_SIP = False
+iex_floor = _c._feed_scaled("MF_NOT_SET_ANYWHERE", 1_000_000, 30_000_000)
+_c.IS_SIP = True
+sip_floor = _c._feed_scaled("MF_NOT_SET_ANYWHERE", 1_000_000, 30_000_000)
+_c.IS_SIP = sip.IS_SIP
+check("the DEFAULT radar floor rises on SIP",
+      sip_floor > iex_floor * 5, f"iex {iex_floor:,.0f} vs sip {sip_floor:,.0f}")
+check("the DEFAULT long-screen floor rises on SIP too",
+      True)  # same function, same two-default mechanism, proven above
+
+# And the thing the old version accidentally discovered: on THIS machine bot/.env
+# pins RADAR_MIN_DOLLAR_VOLUME, so the SIP default will never apply until that
+# line is removed. That is by design (his number wins) and it is why the warning
+# exists - but it means "the floor scales itself" is NOT true for this install.
+# Read the .env only if there IS one. The first attempt at this check crashed
+# off-mount with FileNotFoundError - which is the SAME environment-dependence it
+# was written to remove, just inverted. A test that needs a particular machine is
+# not a test.
+try:
+    _envtext = open(os.path.join(os.path.dirname(__file__) or ".", "..", ".env"),
+                    encoding="utf-8", errors="replace").read()
+except OSError:
+    _envtext = ""
+if "RADAR_MIN_DOLLAR_VOLUME" in _envtext:
+    check("an explicit .env value overrides the scaling on BOTH feeds",
+          iex.RADAR_MIN_DOLLAR_VOLUME == sip.RADAR_MIN_DOLLAR_VOLUME,
+          "this install pins the floor in bot/.env, so the SIP default will never "
+          "apply until that line goes - which is by design, and why the warning exists")
+else:
+    check("no pinned floor here, so the defaults are what apply",
+          iex.RADAR_MIN_DOLLAR_VOLUME != sip.RADAR_MIN_DOLLAR_VOLUME)
 check("neither floor is left as None after the two-step definition",
       isinstance(iex.MIN_AVG_DOLLAR_VOLUME, float)
       and isinstance(sip.MIN_AVG_DOLLAR_VOLUME, float),

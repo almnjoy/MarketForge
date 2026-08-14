@@ -650,3 +650,10 @@ nav.subtabs button.on { color: var(--accent); border-color: var(--accent);
 tr.log-skipped td { opacity: .62; }
 tr.log-alerted td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .livechip .p.off { background: var(--dim); box-shadow: none; animation: none; }
+
+/* Lane sub-nav. Same pills as the ADMIN sub-tabs, but it lives OUTSIDE <main>,
+   so it needs main's own padding and max-width or it hugs the window edge while
+   every other sub-tab bar sits aligned with the content under it. */
+#lanetabs { padding: 0 20px; max-width: min(2200px, 95vw); margin: 0 auto 4px;
+  justify-content: flex-start; }
+#lanetabs button { padding: 6px 16px; font-size: 12px; }
