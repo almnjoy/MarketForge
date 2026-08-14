@@ -177,6 +177,7 @@ SHELL_HOOKS = {}   # shell.py may register: focus() -> bring the window forward
 
 
 BOT_PID = BOT_HOME / "data" / "engine.pid"
+TAP_PID_PATH = BOT_HOME / "data" / "tap.pid"
 
 
 def _pid_alive(pid):
@@ -244,6 +245,126 @@ def _kill_stale_engine():
         print(f"[embedded bot] stale-pid check failed: {e}")
 
 
+# --------------------------------------------------------------- THE TAP
+# The live price tap used to be a window you opened by hand, and that cost real
+# money-adjacent confusion twice in one day:
+#   1. Started pre-open, it held SMCI and VRM. Two positions opened at 09:30 were
+#      simply absent from it, while the header chip read a green 14/14 - a full
+#      pass on a question nobody had asked.
+#   2. It is easy to forget entirely, and then every price on screen is quietly
+#      fifteen minutes old with nothing saying so.
+#
+# BOTH ARE THE SAME BUG: the subscription list is chosen ONCE at startup and never
+# revisited. Supervising it here fixes the second problem; RESTARTING it when the
+# position set changes fixes the first, which is the one that mattered.
+TAP_PID = TAP_PID_PATH
+TAP_STOP = threading.Event()
+TAP_KICK = threading.Event()
+_tap = {"proc": None, "symbols": [], "positions": frozenset(), "restarts": 0,
+        "started": 0, "last_error": ""}
+
+
+def _tap_enabled():
+    """Off means off: an explicit 0/false, or websocket-client not installed."""
+    if str(os.environ.get("MF_START_TAP", "1")).lower() in ("0", "false", "no"):
+        return False, "MF_START_TAP is off"
+    try:
+        import websocket  # noqa: F401
+    except Exception:
+        return False, "websocket-client not installed (pip install websocket-client)"
+    return True, ""
+
+
+def _held_symbols():
+    """What the BROKER says we hold. The tap's reserved slots depend on this."""
+    try:
+        raw, _ = _bot_get("positions", timeout=10)
+        return frozenset(p.get("symbol") for p in (json.loads(raw) or []) if p.get("symbol"))
+    except Exception:
+        return _tap["positions"]      # unknown != empty; keep the last known set
+
+
+def _tap_supervisor():
+    """Run the tap, restart it on crash, and restart it when positions change.
+
+    The position check is the whole point. A tap that is healthy and watching the
+    wrong symbols is worse than one that is down, because a down tap SAYS it is
+    down and a stale one shows you a green chip.
+    """
+    _kill_stale_tap()
+    ok, why = _tap_enabled()
+    if not ok:
+        _tap["last_error"] = why
+        print(f"[tap] not starting: {why}")
+        return
+    backoff = 5
+    while not TAP_STOP.is_set():
+        held = _held_symbols()
+        _tap["positions"] = held
+        try:
+            logs = WORK / "logs"
+            logs.mkdir(exist_ok=True)
+            lp = logs / "tap.log"
+            mode = "w" if (lp.exists() and lp.stat().st_size > 5_000_000) else "a"
+            tap_log = open(lp, mode, buffering=1, encoding="utf-8", errors="replace")
+            proc = subprocess.Popen(
+                [sys.executable, str(ROOT / "bot" / "src" / "stream.py")],
+                cwd=str(ROOT / "bot" / "src"),
+                env={**os.environ, "MF_BOT_HOME": str(BOT_HOME)},
+                stdin=subprocess.DEVNULL, stdout=tap_log, stderr=subprocess.STDOUT,
+                **NOWIN)
+        except Exception as e:
+            _tap["last_error"] = str(e)[:200]
+            print(f"[tap] could not start: {e}")
+            return
+        _tap["proc"], _tap["started"] = proc, time.time()
+        try:
+            if TAP_PID:
+                TAP_PID.parent.mkdir(parents=True, exist_ok=True)
+                TAP_PID.write_text(str(proc.pid), encoding="utf-8")
+        except Exception:
+            pass
+        atexit.register(lambda p=proc: p.poll() is None and _kill_proc(p))
+        print(f"[tap] started pid {proc.pid} watching {len(held)} position(s) + indices")
+
+        t0 = time.time()
+        while proc.poll() is None and not TAP_STOP.is_set():
+            time.sleep(10)
+            now = _held_symbols()
+            if now != _tap["positions"]:
+                # THE FIX. A position opened after the tap started would otherwise
+                # never be watched, and nothing on screen would say so.
+                added = sorted(now - _tap["positions"])
+                gone = sorted(_tap["positions"] - now)
+                print(f"[tap] positions changed"
+                      + (f" (+{','.join(added)})" if added else "")
+                      + (f" (-{','.join(gone)})" if gone else "")
+                      + " - restarting so the new set is actually subscribed")
+                _tap["positions"] = now
+                TAP_KICK.set()
+                break
+            if TAP_KICK.is_set():
+                break
+        if proc.poll() is None:
+            _kill_proc(proc)
+        if TAP_STOP.is_set():
+            return
+        if TAP_KICK.is_set():
+            TAP_KICK.clear()
+            _tap["restarts"] += 1
+            backoff = 5
+            continue
+        # Crashed on its own. Back off so a broken key does not spin a hot loop.
+        _tap["restarts"] += 1
+        ran = time.time() - t0
+        backoff = 5 if ran > 60 else min(backoff * 2, 300)
+        print(f"[tap] exited after {ran:.0f}s; restarting in {backoff}s")
+        for _ in range(backoff):
+            if TAP_STOP.is_set() or TAP_KICK.is_set():
+                break
+            time.sleep(1)
+
+
 # Set by /api/setup/save after it rewrites bot/.env and kills the engine:
 # tells the supervisor to respawn immediately instead of riding out backoff.
 ENGINE_KICK = threading.Event()
@@ -280,6 +401,38 @@ def stop_engine():
     the startup sweep stay as backstops."""
     ENGINE_STOP.set()
     _kill_stale_engine()   # kills the pid on file, removes the file
+    _stop_tap()            # ...and the tap, which holds the ONLY allowed socket
+
+
+def _kill_stale_tap():
+    """Same reasoning as _kill_stale_engine, plus one that is specific to the tap:
+    Alpaca allows ONE websocket connection per key. A leftover tap does not merely
+    waste a process, it holds the only connection - so the new one is refused and
+    the desk runs blind while both look fine."""
+    try:
+        if not TAP_PID.exists():
+            return
+        pid = int(TAP_PID.read_text().strip() or 0)
+        if pid and pid != os.getpid() and _pid_alive(pid):
+            print(f"[tap] killing orphaned tap pid {pid} from a previous run")
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                               capture_output=True, timeout=10,
+                               stdin=subprocess.DEVNULL, **NOWIN)
+            else:
+                os.kill(pid, 9)
+            time.sleep(1)
+        TAP_PID.unlink(missing_ok=True)
+    except Exception as e:
+        print(f"[tap] stale-pid check failed: {e}")
+
+
+def _stop_tap():
+    TAP_STOP.set()
+    p = _tap.get("proc")
+    if p is not None and p.poll() is None:
+        _kill_proc(p)
+    _kill_stale_tap()
 
 
 def _bot_supervisor():
@@ -2536,6 +2689,29 @@ def build_server():
         print(f"  bot API: {BOT}  (EMBEDDED - engine runs in this process tree)")
     else:
         print(f"  bot API: {BOT}")
+
+    # THE TAP, started here so nobody has to remember a second window. It waits a
+    # few seconds for the engine's API to answer, because its symbol list starts
+    # with the open positions and asking before the engine is up would reserve
+    # nothing and silently watch indices only - which is precisely the class of
+    # quiet-wrong-answer this whole thing keeps producing.
+    _ok, _why = _tap_enabled()
+    if _ok:
+        def _tap_later():
+            for _ in range(30):
+                if TAP_STOP.is_set():
+                    return
+                try:
+                    _bot_get("positions", timeout=5)
+                    break
+                except Exception:
+                    time.sleep(1)
+            _tap_supervisor()
+        threading.Thread(target=_tap_later, daemon=True).start()
+        print("  live tap: starting (auto-restarts when your positions change)")
+    else:
+        print(f"  live tap: OFF - {_why}")
+        print("            prices will be 15 minutes behind; the data chip says so")
     if WORK != ROOT:
         print(f"  workspace: {WORK}  (your keys, plan, journal and boards live HERE,")
         print( "             not in the program folder - point your coding agent at it)")
