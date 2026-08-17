@@ -185,13 +185,9 @@ td.r, th.r { text-align: right; }
 .wb-card .wb-t::before { content: '// '; }
 .wb-card iframe { width: 100%; border: 0; background: var(--panel); flex: 1; min-height: 0; }
 /* ---------- admin sub-nav ---------- */
-#subtabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 16px;
-  border-bottom: 1px solid var(--border); padding-bottom: 10px; }
-#subtabs button { background: transparent; border: 1px solid transparent; color: var(--dim);
-  border-radius: 99px; padding: 6px 15px; font: 500 13px var(--sans); cursor: pointer; }
-#subtabs button:hover { color: var(--fg); }
-#subtabs button.on { border-color: var(--accent); color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent); }
+/* The Admin sub-nav's own rules moved into the shared `nav.subtabs` block
+   further down - this bar already carries class="subtabs", so it now inherits
+   the exact look it used to define, and every other sub-nav matches it. */
 .subview { display: none; } .subview.on { display: block; }
 .themerow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 
@@ -626,13 +622,30 @@ body.has-reader { overflow: hidden; }
   background: color-mix(in srgb, var(--warn, var(--loss)) 10%, transparent); }
 
 /* Sub-tab nav, shared by ADMIN and RADAR. */
-nav.subtabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 14px; }
-nav.subtabs button { background: none; border: 1px solid var(--border);
-  border-radius: 999px; color: var(--dim); font: 600 12px var(--serif);
-  letter-spacing: .04em; padding: 5px 14px; cursor: pointer; }
+/* ---------- sub-navigation: ONE definition for every bar ----------
+   There used to be two competing rules. `nav.subtabs` (the lane bar and the
+   Radar bar) drew a visible 1px border around EVERY button, so a three-item
+   row read as three empty boxes with one lit up. `#subtabs` (Admin) drew a
+   TRANSPARENT border and only the active item got an outline, which is why
+   Admin looked clean and the trading lanes looked unfinished.
+
+   The Admin treatment wins and is now the only one. Selectors that used to
+   restyle these buttons are gone rather than overridden, because the reason
+   the two drifted in the first place was having two places to change. */
+nav.subtabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 14px; }
+nav.subtabs button { background: transparent; border: 1px solid transparent;
+  border-radius: 99px; color: var(--dim); font: 500 13px var(--sans);
+  letter-spacing: 0; padding: 6px 15px; cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease; }
 nav.subtabs button:hover { color: var(--fg); }
 nav.subtabs button.on { color: var(--accent); border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+/* In-page bars get the rule under them that Admin already had. #lanetabs is
+   excluded: it sits directly beneath #tabs, which draws its own bottom border,
+   and two hairlines 30px apart reads as a mistake. */
+nav.subtabs:not(#lanetabs) { border-bottom: 1px solid var(--border);
+  padding-bottom: 10px; margin-bottom: 16px; }
 
 /* Brief */
 .brief-text { font-size: 15px; line-height: 1.65; margin-bottom: 10px; }
@@ -654,6 +667,8 @@ tr.log-alerted td { background: color-mix(in srgb, var(--accent) 7%, transparent
 /* Lane sub-nav. Same pills as the ADMIN sub-tabs, but it lives OUTSIDE <main>,
    so it needs main's own padding and max-width or it hugs the window edge while
    every other sub-tab bar sits aligned with the content under it. */
-#lanetabs { padding: 0 20px; max-width: min(2200px, 95vw); margin: 0 auto 4px;
+/* The lane bar aligns with main's gutter and hugs the left edge. Button
+   styling deliberately NOT repeated here - it comes from nav.subtabs, which is
+   the whole point of the 2026-08-16 unification. */
+#lanetabs { padding: 6px 20px 0; max-width: min(2200px, 95vw); margin: 0 auto 4px;
   justify-content: flex-start; }
-#lanetabs button { padding: 6px 16px; font-size: 12px; }

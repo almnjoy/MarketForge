@@ -32,11 +32,11 @@ Write-Host "Next: guided setup - it takes your Alpaca keys, checks them, and det
 Write-Host "whether your account has real-time data." -ForegroundColor Cyan
 Write-Host ""
 Push-Location $dest
-& $py.Source setup.py
+& $py.Source _app\setup.py
 Pop-Location
 
 Write-Host ""
-Write-Host "  Start the desk:  run-portable.bat   ->  http://localhost:8410"
+Write-Host "  Start the desk:  _app\run-portable.bat   ->  http://localhost:8410"
 Write-Host "  Copilot:         open a terminal in $dest and start your coding agent"
 Write-Host "  Docs:            https://docs.madeformeai.com/marketforge/index"
 Write-Host "  Community:       https://discord.gg/JE8TEYZp2f"

@@ -22,7 +22,11 @@ def _root() -> Path:
     # static/ and friends ship as plain sibling files, not bundled data.
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+    # Source checkout: this module lives in _app/ since the 2026-08-16 root
+    # split, so the program root is one level UP. Getting this wrong points
+    # BOT_HOME at _app/bot and the wizard writes keys to a folder the engine
+    # never reads - it reports success and the desk stays parked.
+    return Path(__file__).resolve().parent.parent
 
 
 ROOT = _root()

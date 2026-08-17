@@ -60,12 +60,39 @@ check("all three lanes are routed", len(re.findall(r"^\s{2}\w+: \{", lane_block.
 print("\nevery sub-tab button has somewhere to go")
 
 subs = set(re.findall(r'data-lanesub="(\w+)"', HTML))
-check("the three sub-tabs are declared", subs == {"overview", "radar", "settings"}, str(subs))
-for s in sorted(subs):
+# Sub-tabs split into two kinds since 2026-08-16:
+#   universal - every lane must route it, or the tab highlights and shows the
+#               wrong pane
+#   lane-only - declared once, routed by SOME lanes. Consensus is Live-only
+#               because the Investment Council workspace is a swing/portfolio
+#               tool and means nothing on an intraday lane.
+# The original concern is unchanged and still enforced below: a button that a
+# lane cannot route must never be CLICKABLE on that lane.
+UNIVERSAL = {"overview", "radar", "settings"}
+LANE_ONLY = {"consensus"}
+check("the declared sub-tabs are the expected set",
+      subs == UNIVERSAL | LANE_ONLY, str(subs))
+for s in sorted(subs & UNIVERSAL):
     check(f"'{s}' is routed for every lane",
           lane_block and lane_block.group(1).count(f"{s}:") >= 3,
           "a lane missing a route silently falls back to overview, so the tab "
           "highlights and shows the wrong pane")
+for s in sorted(subs & LANE_ONLY):
+    check(f"'{s}' is routed by at least one lane",
+          lane_block and lane_block.group(1).count(f"{s}:") >= 1,
+          "declared in the nav but no lane can show it")
+
+# The safety net that makes lane-only tabs legal at all.
+check("showLane hides sub-tabs the active lane cannot route",
+      re.search(r"cfg\.views\[x\.dataset\.lanesub\]", JS) is not None
+      and re.search(r"x\.style\.display\s*=", JS) is not None,
+      "without this a lane-only tab is clickable everywhere and falls back to "
+      "overview while staying highlighted - the exact bug the universal rule "
+      "was written to prevent")
+check("a hidden sub-tab cannot also be marked selected",
+      re.search(r"x\.classList\.toggle\('on',\s*has\s*&&", JS) is not None,
+      "hiding the button but leaving .on set means the highlight survives on a "
+      "lane that cannot render the pane")
 
 print("\nlane buttons exist and exactly one starts on")
 

@@ -17,7 +17,7 @@ REM  anything is in flight.
 REM
 REM  Override:  stop.bat --force
 REM ============================================================
-cd /d %~dp0
+cd /d %~dp0..
 title MARKET FORGE - STOP
 
 if /I "%~1"=="--force" goto :dostop

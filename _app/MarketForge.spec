@@ -11,9 +11,13 @@ Build with build.py, not by hand - it also assembles the sibling files and
 refuses to ship bot/.env.
 """
 
+# Paths are relative to the BUILD CWD, which build.py sets to the repo root.
+# Since the 2026-08-16 split, shell.py/setup_core.py/tv.py/frozen_requirements.py
+# live in _app/ while app.py stays at the root, so BOTH are on pathex or the
+# analysis silently misses half the program.
 a = Analysis(
-    ['shell.py'],
-    pathex=[],
+    ['_app/shell.py'],
+    pathex=['.', '_app'],
     binaries=[],
     datas=[],            # resources ship as sibling files (build.py copies them)
     hiddenimports=[

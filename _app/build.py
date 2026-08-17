@@ -24,15 +24,27 @@ import sys
 import zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+# This script lives in _app/ since the 2026-08-16 root split, so ROOT is one
+# level UP. Everything below still addresses the repo root, unchanged.
+ROOT = Path(__file__).resolve().parent.parent
+APP = ROOT / "_app"
 DIST = ROOT / "dist" / "MarketForge"
-NEVER_SHIP = ["bot/.env", "bot/data", "chat-inbox.jsonl", "chat-outbox.jsonl",
+NEVER_SHIP = ["bot/.env", "bot/data",
+              # the entire user-state bin - one entry replaces the six files it
+              # used to take, and anything new that lands in _data/ is covered
+              # without someone remembering to extend this list
+              "_data",
+              "chat-inbox.jsonl", "chat-outbox.jsonl",
               "memory.md", "journal.jsonl", "usage.jsonl", "state.json",
               "webview-data", "logs", "tv-shots", "saved-workbenches",
               # RULES.md is the developer's own trading plan. The build ships
               # RULES.template.md and the app seeds RULES.md from it on first
               # run, so a release must never carry one person's strategy.
-              "RULES.md"]
+              "RULES.md",
+              # per-lane brains are the same thing: HIS strategy, not product.
+              # _templates/ ships; the filled-in lanes never do.
+              "TheTradingBrains/DayTrader", "TheTradingBrains/MoneyTrader",
+              "TheTradingBrains/PaperTrader"]
 
 # A fresh default config - NOT the repo one, which carries personal picks
 # (a cloned voice, an opus bridge). sonnet is the shipped default.
@@ -68,7 +80,7 @@ def make_icon() -> Path:
 
 def pyinstaller():
     r = subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm",
-                        "--clean", str(ROOT / "MarketForge.spec")], cwd=str(ROOT))
+                        "--clean", str(APP / "MarketForge.spec")], cwd=str(ROOT))
     if r.returncode != 0:
         raise SystemExit(f"PyInstaller failed rc={r.returncode}")
     if not (DIST / "MarketForge.exe").exists():
@@ -96,11 +108,17 @@ def copy_siblings():
     # identical - it carries the "never place an order" rule.
     _brief = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     (ROOT / "CLAUDE.md").write_text(_brief, encoding="utf-8", newline="\n")
-    for f in ("RULES.template.md", "AGENTS.md", "CLAUDE.md", "run-tradingview.bat"):
+    for f in ("RULES.template.md", "AGENTS.md", "CLAUDE.md"):
         shutil.copy2(ROOT / f, DIST / f)
         print(f"  + {f}")
-    (DIST / "config.json").write_text(DEFAULT_CONFIG, encoding="utf-8")
-    print("  + config.json (clean defaults)")
+    # run-tradingview.bat now lives in _app/ and expects to sit one level below
+    # the app root ("cd /d %~dp0.."), so it ships into _app/ in dist too.
+    (DIST / "_app").mkdir(exist_ok=True)
+    shutil.copy2(APP / "run-tradingview.bat", DIST / "_app" / "run-tradingview.bat")
+    print("  + _app/run-tradingview.bat")
+    # The packaged app seeds _data/config.json from this on first boot.
+    (DIST / "_app" / "config.default.json").write_text(DEFAULT_CONFIG, encoding="utf-8")
+    print("  + _app/config.default.json (clean defaults)")
 
 
 def verify():

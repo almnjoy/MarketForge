@@ -91,17 +91,25 @@ endpoint cannot place a live order** - the live half only writes
 `staged-trade.json`, the same file bus you already use, so the stage-never-send
 guarantee below is untouched.
 
-**Why this rule exists.** The live account is $1,000, under the $2,000 Reg T
-minimum, so it **cannot short and cannot use margin**. Every short setup the
-short lane finds is unexecutable live and will be until it is funded. Before
+**Why this rule exists.** It was written when the live account was cash under the
+$2,000 Reg T minimum, so it could not short and could not use margin. **That
+changed 2026-08-17: the account is now MARGIN with `shorting_enabled: true`.**
+The rule stands anyway, for a different reason: **read the Reg T cushion before
+using it.** Clearing the $2,000 line by a small margin means a red day drops the
+account back under and shorting switches off with a position open. Paper stays the
+record; live is the option. Live figures are operator data - read them from
+`GET /api/status` and `TheTradingBrains/ROUTING.md`, never from this file. Before
 this, those setups produced nothing - no fill, no stop, no P/L, no lesson. Now
 the paper account is the *record* and the live ticket is the *option*. Do not
 skip the paper leg because a trade "can't be done live". That is precisely the
 trade the paper leg exists to capture.
 
 Set `stage_live: false` for anything the live account structurally cannot do
-(shorts, margin) unless the operator says otherwise - staging a ticket that would
-be rejected is noise.
+unless the operator says otherwise - staging a ticket that would be rejected is
+noise. **That list shrank on 2026-08-17**: shorts and margin are no longer on it.
+What is on it now is a judgement call, so name the number when you make it - a live
+short can be simultaneously *possible* and *unwise* on a thin Reg T cushion, and
+those are different sentences. Stage it and say the cushion you read.
 
 If the desk is not running, fall back to writing `staged-trade.json` directly and
 say the paper leg did not fire.
@@ -258,7 +266,7 @@ state this app can be in.
 
 ## TradingView (optional lane, personal)
 
-Chrome runs TradingView with the DevTools protocol on :9222 (`run-tradingview.bat`).
+Chrome runs TradingView with the DevTools protocol on :9223 (`run-tradingview.bat`).
 The desk can steer it, so you can too:
 
 - `POST /api/tv/open {symbol, interval}` - point the chart somewhere. Intervals:
@@ -314,7 +322,13 @@ POST order            - MANUAL trade. Body: {symbol, side, confirm:"live",
   conversation. Research freely; execution is his call. Prefer pointing him to the
   dashboard's Trade ticket; if he asks you to place it, use POST /api/order with
   confirm:"live" and say exactly what you sent.
-- Always attach an exit: default trailing stop 10% (exit_trail_pct). No naked entries.
+- Always attach an exit. No naked entries, ever. **Width is per venue since
+  2026-08-17: PAPER keeps the blanket 10% failsafe; LIVE is per symbol from an
+  evaluation of that name** (`data/trail-plan.json`, `POST /api/trail-plan`, add
+  `apply:true` to cancel the old stop and re-arm in one call). When you stage a live
+  ticket, name the width you chose and why, in the `why` string - "10%" is now an
+  answer that has to be earned rather than the default. A live name with no read yet
+  rides a placeholder and appears in `needs_eval` at `GET /api/trail-plan`.
 - Respect the training-wheels caps (RULES.md): $50/trade, 2 auto entries/day, $150
   auto exposure, $3 price floor. His manual trades can differ but remind him once
   when he goes way outside them.

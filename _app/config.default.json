@@ -1,0 +1,10 @@
+{
+  "_comment": "Shipped defaults for a fresh install. The app copies this to _data/config.json on first boot and never touches it again - edit _data/config.json, not this file.",
+  "bot_base": "http://127.0.0.1:8796",
+  "port": 8410,
+  "voicebox_url": "http://127.0.0.1:17493",
+  "bridge_model": "sonnet",
+  "bridge_timeout": 150,
+  "splash_ms": 2500,
+  "embedded": true
+}

@@ -6,7 +6,7 @@ REM  no Docker. Reads bot\.env, where STOCK_ENV decides paper vs live.
 REM  First run: copy bot\.env.template to bot\.env and add your Alpaca keys.
 REM  A second desk (remote engine) can run on 8411 at the same time.
 REM ============================================================
-cd /d %~dp0
+cd /d %~dp0..
 title MARKET FORGE - PORTABLE (8410)
 set MF_PORT=8410
 set MF_EMBEDDED=1

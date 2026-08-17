@@ -49,6 +49,9 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
 <nav id="lanetabs" class="subtabs">
   <button data-lanesub="overview" class="on">Overview</button>
   <button data-lanesub="radar">Radar</button>
+  <!-- Live-only. showLane() hides any button the active lane has no view for,
+       so this does not appear on Daily or Paper. -->
+  <button data-lanesub="consensus">Consensus</button>
   <button data-lanesub="settings">Settings</button>
 </nav>
 
@@ -261,6 +264,21 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
     </div>
   </section>
 
+  <!-- CONSENSUS: the vendored Investment Council workspace, rendered.
+       The pipeline itself is NOT reimplemented here - stage 01 is his Python,
+       stages 02-06 are run by the copilot. This tab only kicks off stage 01 and
+       displays whatever the run wrote to disk. -->
+  <section id="view-consensus" class="view">
+    <div class="panel-h">
+      <h2 style="margin:0">Consensus Report</h2>
+      <span class="dim" id="consensusRun"></span>
+      <span style="flex:1"></span>
+      <button id="consensusFetch" class="btn sm">Run stage 01 - fetch</button>
+      <button id="consensusReload" class="btn sm">Reload</button>
+    </div>
+    <div id="consensusBody" class="mut">loading...</div>
+  </section>
+
   <section id="view-lane-settings" class="view">
     <h2 id="laneSettingsTitle">Lane settings</h2>
     <div class="card">
@@ -419,6 +437,17 @@ try { document.documentElement.dataset.theme = localStorage.getItem('mfTheme') |
       <div id="chatDays"></div>
     </aside>
     <div class="chatwrap">
+      <!-- Three chats, one per brain. MANUAL routing: the operator picks the
+           lane, so both sides know which playbook is in play. Each tab is its
+           own conversation - history, replies and day list are all filtered. -->
+      <nav id="chatlanes" class="subtabs">
+        <button data-chatlane="workshop" class="on">Workshop</button>
+        <button data-chatlane="daily">Daily Trader</button>
+        <button data-chatlane="live">Live Trader</button>
+        <button data-chatlane="paper">Paper Trader</button>
+        <span id="chatLaneNote" class="dim"
+              style="margin-left:auto;align-self:center;font-size:12px"></span>
+      </nav>
       <div class="chathead">
         <span id="bridgeChip" class="chip">bridge: ...</span>
         <button id="stopBtn" class="btn sm stop hidden" title="kill the in-flight turn + silence the voice">⏹ Stop</button>

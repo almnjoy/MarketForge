@@ -1,6 +1,17 @@
 # secrets + personal state stay OFF the repo
 bot/.env
 bot/data/
+# ---------------------------------------------------------------------------
+# 2026-08-16: the churning state files moved out of the root into _data/.
+# The WHOLE folder is user state - chat buses, journal, usage, the 20s snapshot,
+# config.json, memory.md, schedule.json, staged-trade.json. One line covers all
+# of it, and anything new that lands in there is ignored by default rather than
+# by someone remembering to add a line. The shipped config default is
+# _app/config.default.json, which IS tracked.
+# ---------------------------------------------------------------------------
+_data/
+# Bare-name copies, kept so an older checkout or a stray write at the root is
+# still ignored rather than silently staged.
 chat-inbox.jsonl
 chat-outbox.jsonl
 journal.jsonl
@@ -22,8 +33,11 @@ nohup.out
 demo/raw/
 demo/audio/
 
-# Claude Code per-machine tool allowlist - private, machine-specific
-.claude/settings.local.json
+# Claude Code per-machine tool allowlist - private, machine-specific.
+# LEADING ** MATTERS: a pattern containing a slash is anchored to the repo
+# root, so the old `.claude/settings.local.json` did not cover _app/.claude/
+# and it showed up as a new untracked file after the 2026-08-16 split.
+**/.claude/settings.local.json
 
 # live snapshot - regenerated every 20s, machine-specific
 state.json
@@ -60,3 +74,7 @@ schedule.json
 # video cut rigs: big binaries, and the source captures can contain live keys.
 # Publishing a cut is a separate, deliberate decision.
 demo/edit-*/
+
+# third-party tools cloned locally (see _tools/README.md) - never ours to ship
+_tools/*
+!_tools/README.md

@@ -15,6 +15,15 @@ special; the interesting half (navigate in place, screenshot) needs a WebSocket,
 so there is a ~70-line client below. If it fails for any reason we degrade to
 close-and-reopen, which still gets you the right chart.
 
+PORT 9223, NOT 9222 (changed 2026-08-16). The tradesdontlie/tradingview-mcp
+bridge drives TradingView DESKTOP over CDP and its launch scripts hardcode
+9222. Two CDP endpoints cannot share a port, and the failure is confusing
+rather than loud: whichever process binds first owns it, and the second one
+either fails to bind or - worse - silently attaches to the FIRST one's targets
+and starts driving the wrong application. So the desktop app keeps 9222, which
+its scripts assume, and this Chrome moved to 9223, which is one env var here.
+Override with MF_TV_CDP.
+
 Start the browser with run-tradingview.bat.
 """
 from __future__ import annotations
@@ -28,7 +37,7 @@ import time
 import urllib.parse
 import urllib.request
 
-CDP = os.environ.get("MF_TV_CDP", "http://127.0.0.1:9222").rstrip("/")
+CDP = os.environ.get("MF_TV_CDP", "http://127.0.0.1:9223").rstrip("/")
 DEFAULT_EXCHANGE = os.environ.get("MF_TV_EXCHANGE", "")   # e.g. NASDAQ; blank = let TV resolve
 # TradingView interval codes: 1,5,15,60,240 = minutes; D,W,M
 INTERVALS = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60",

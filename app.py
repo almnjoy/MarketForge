@@ -32,10 +32,19 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import setup_core   # shared setup logic - the /api/setup/* endpoints and the
-                    # terminal wizard (setup.py) call the SAME functions
-
 FROZEN = bool(getattr(sys, "frozen", False))
+
+# setup_core lives in _app/ after the 2026-08-16 root split. It is imported by
+# BOTH this server and the terminal wizard (_app/setup.py), so it has to be
+# importable from either cwd - hence the explicit sys.path insert rather than a
+# relative import. Frozen builds flatten _app/ into the bundle, so the plain
+# `import setup_core` still resolves there and this insert is a no-op.
+_APP_DIR = Path(__file__).resolve().parent / "_app"
+if _APP_DIR.is_dir() and str(_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(_APP_DIR))
+
+import setup_core   # noqa: E402  - shared setup logic; the /api/setup/*
+                    # endpoints and the terminal wizard call the SAME functions
 
 
 def _app_root() -> Path:
@@ -106,13 +115,30 @@ def resource_path(rel: str) -> Path:
 
 
 STATIC = resource_path("static")
+
+# ---------------------------------------------------------------- the two bins
+# The root used to hold ~35 loose files: installers, a .spec, three .bat
+# launchers, and eight churning state files, all mixed together. Two folders,
+# each with exactly one job:
+#
+#   _app/   plumbing you never open by hand - installers, build, spec, shell,
+#           the launchers. Ships with the product, read-only in practice.
+#   _data/  live state that changes while the desk runs - the chat buses, the
+#           journal, usage, the 20s snapshot, config. Per-user, gitignored.
+#
+# _app rides ROOT (the program folder) and _data rides WORK (the user's
+# workspace) so the packaged build keeps its "delete the program folder, keep
+# everything personal" property. In a source checkout they are siblings.
+APP = ROOT / "_app"
+DATA = WORK / "_data"
+
 PANELS = WORK / "panels"
-INBOX = WORK / "chat-inbox.jsonl"
-OUTBOX = WORK / "chat-outbox.jsonl"
-RULES = WORK / "RULES.md"
+INBOX = DATA / "chat-inbox.jsonl"
+OUTBOX = DATA / "chat-outbox.jsonl"
+RULES = WORK / "RULES.md"          # your plan - stays at root, you edit it daily
 SAVED = WORK / "saved-workbenches"
-MEMORY = WORK / "memory.md"        # standing preferences the copilot honors
-JOURNAL = WORK / "journal.jsonl"   # the decision log Replay reconstructs from
+MEMORY = DATA / "memory.md"        # standing preferences the copilot honors
+JOURNAL = DATA / "journal.jsonl"   # the decision log Replay reconstructs from
 SHOTS = WORK / "tv-shots"          # TradingView captures - agents READ these
 
 DEFAULT_MEMORY = """# Trading Memory
@@ -139,9 +165,9 @@ def _journal_log(kind, text):
 _cfg = {"bot_base": "http://127.0.0.1:8796", "port": 8410,
         "voicebox_url": "http://127.0.0.1:17493"}
 try:
-    _cfgp = WORK / "config.json"
+    _cfgp = DATA / "config.json"
     if not _cfgp.exists():
-        _cfgp = ROOT / "config.json"      # shipped default on a fresh install
+        _cfgp = APP / "config.default.json"   # shipped default, fresh install
     _cfg.update(json.loads(_cfgp.read_text(encoding="utf-8")))
 except Exception:
     pass
@@ -510,9 +536,9 @@ _STARTED_AT = time.time()    # process start, for the Admin tab's uptime
 # 15s), so a long silence means every tab is gone. The engine never calls in
 # here - app.py proxies OUT to it - so this really is a client signal.
 LAST_CLIENT = [time.time()]
-USAGE = WORK / "usage.jsonl"  # measured copilot spend, one line per bridge turn
-STATE = WORK / "state.json"   # live snapshot ON DISK - see _state_writer()
-STAGED = WORK / "staged-trade.json"   # a trade the copilot proposes; you confirm
+USAGE = DATA / "usage.jsonl"  # measured copilot spend, one line per bridge turn
+STATE = DATA / "state.json"   # live snapshot ON DISK - see _state_writer()
+STAGED = DATA / "staged-trade.json"   # a trade the copilot proposes; you confirm
 
 
 def _state_writer():
@@ -608,8 +634,84 @@ def _kill_proc(p):
         except Exception:
             pass
 
+# ------------------------------------------------------------------ lanes
+# Manual routing, chosen 2026-08-16 over inferring the lane from the wording of
+# a question. Inference is a guess that fails silently: it answers confidently
+# out of the wrong playbook and nothing in the transcript says which one it
+# read. A button cannot be ambiguous, and it makes the lane visible to BOTH
+# sides of the conversation.
+CHAT_LANES = {
+    # The workshop is NOT a trading lane. It is the desk-maintenance chat: bugs,
+    # research, refactors, "why did that scan return nothing". It is the only
+    # lane allowed to span the other three, and the only one that may change the
+    # app. It is the DEFAULT, which also means every untagged pre-2026-08-16
+    # message reads as workshop rather than disappearing - that history was
+    # general-purpose chat, so this is where it belonged all along.
+    "workshop": {
+        "label": "Workshop", "brain": "",
+        "brief": "NOT a trading lane - this is the desk's own workshop. Bugs, "
+                 "fixes, refactors, deep research, and questions that SPAN the "
+                 "three lanes (total exposure, why a scan returned nothing, what "
+                 "changed). You may read every brain in TheTradingBrains/, the "
+                 "notes in research/, and the code. Start from "
+                 "TheTradingBrains/ROUTING.md and docs/ARCHITECTURE-FIVE-LAYERS.md.\n"
+                 "- This is the ONLY lane that may propose or make changes to the "
+                 "app itself. Say what you changed and why, in one sentence.\n"
+                 "- Trading rules still bind you: never place a trade, never "
+                 "compute a number you then quote as fact - compute it in code.",
+    },
+    "daily": {
+        "label": "Daily Trader", "brain": "DayTrader",
+        "brief": "Brain 3 - INTRADAY MOMENTUM. Low-float small caps, $0.50-$20, "
+                 "in and out the same session. Standalone: it shares nothing with "
+                 "the swing lanes except the idea of a stop. Its scanner is "
+                 "daily_play.py. Its live venue used to be capped by T+1 settlement "
+                 "on a cash account; since 2026-08-17 the account is MARGIN, so the "
+                 "cap is PDT instead - 3 day trades per 5 rolling business days under "
+                 "$25k, and Alpaca does not return daytrade_count for this account, "
+                 "so that budget has to be counted locally. Paper is still where "
+                 "this brain can actually run.",
+    },
+    "live": {
+        "label": "Live Trader", "brain": "MoneyTrader",
+        "brief": "THE SWING BRAIN on REAL MONEY. Multi-week swing on daily bars. "
+                 "Its scanner is scan_live.py. Every entry STAGES and waits for a "
+                 "human click - you never fire one. As of 2026-08-17 the account is "
+                 "MARGIN (shorting_enabled, multiplier 4) so shorting is possible "
+                 "here for the first time - but equity is $2,003, three dollars over "
+                 "the $2,000 Reg T line, so a red day switches shorting off under an "
+                 "open position. Trail widths on this venue are PER SYMBOL from "
+                 "data/trail-plan.json, not a default. The Consensus Report "
+                 "workspace belongs to this lane.",
+    },
+    "paper": {
+        "label": "Paper Trader", "brain": "PaperTrader",
+        "brief": "The SAME swing brain as Live, on the paper venue, fired "
+                 "AUTOMATICALLY. It is the always-on shadow of Live and the study "
+                 "log, not a different strategy - read MoneyTrader's brain first "
+                 "and treat PaperTrader's as the list of differences. It is where "
+                 "shorts still run by CHOICE, not by capital limit - live can short "
+                 "since the 2026-08-17 margin conversion, on a $3 Reg T cushion. "
+                 "Mirroring is "
+                 "PERCENTAGE-matched, never share-matched. Its trail stays the "
+                 "blanket 10% failsafe on purpose - this book is unwatched and a "
+                 "uniform width is what makes the trail A/B comparable.",
+    },
+}
+DEFAULT_LANE = "workshop"
+
+
+def _lane_of(v) -> str:
+    v = str(v or "").strip().lower()
+    return v if v in CHAT_LANES else DEFAULT_LANE
+
+
 BRIDGE_PROMPT = """You are the LIVE bridge turn for the MARKET FORGE trading dashboard. CLAUDE.md in
 this folder is your full brief; its trading rules are HARD rules for you too.
+
+ACTIVE LANE: {lane_label}
+{lane_brief}
+{lane_read}
 
 The user's standing MEMORY (memory.md - HONOR these, they override defaults; if they say
 "remember ..." APPEND it to memory.md as a "- " bullet and confirm):
@@ -698,7 +800,7 @@ def _iter_lines(proc):
         return
 
 
-def _bridge_turn(new_texts):
+def _bridge_turn(new_texts, lane=DEFAULT_LANE):
     """One bridge turn over stream-json so the UI can show REAL steps (the
     actual tool calls: Read radar, Write panels/x.html) instead of a fake
     progress bar. Fallback to plain text if the stream never yields a result."""
@@ -707,7 +809,12 @@ def _bridge_turn(new_texts):
         return ("Bridge error: no coding-agent CLI found. Install Claude Code or "
                 "Codex and put it on PATH, or set AGENT_BIN to the full path, then "
                 "restart the desk.")
-    hist = [*_read_jsonl(INBOX, 20), *_read_jsonl(OUTBOX, 20)]
+    # History is PER LANE. Feeding a Daily-lane turn the last Paper conversation
+    # is the same failure the lane buttons were built to remove - it just moves
+    # the wrong context from routing into the transcript.
+    lane = _lane_of(lane)
+    hist = [*_read_jsonl(INBOX, 200), *_read_jsonl(OUTBOX, 200)]
+    hist = [m for m in hist if _lane_of(m.get("lane")) == lane]
     hist.sort(key=lambda m: str(m.get("ts", "")))
     hist_txt = "\n".join(f"{m.get('role')}: {str(m.get('text', ''))[:300]}" for m in hist[-14:])
     mem = ""
@@ -715,8 +822,22 @@ def _bridge_turn(new_texts):
         mem = MEMORY.read_text(encoding="utf-8", errors="replace")[:1400]
     except Exception:
         pass
+    _ln = CHAT_LANES[lane]
+    if _ln["brain"]:
+        lane_read = (
+            "- The operator PICKED this lane with a button. Answer INSIDE it. Read\n"
+            f"  TheTradingBrains/{_ln['brain']}/00-BRAIN.md before anything lane-specific,\n"
+            "  and TheTradingBrains/ROUTING.md if you need the map. Do NOT answer out of\n"
+            "  another lane's playbook; if the question really belongs to a different lane,\n"
+            "  SAY WHICH ONE and let the operator switch rather than guessing.")
+    else:
+        lane_read = (
+            "- The operator PICKED this lane with a button. It spans the others on\n"
+            "  purpose, so reading more than one brain here is correct.")
     prompt = BRIDGE_PROMPT.format(bot=BOT.split("//", 1)[-1], port=PORT,
                                   memory=mem or "(empty)",
+                                  lane_label=_ln["label"], lane_brief=_ln["brief"],
+                                  lane_read=lane_read,
                                   history=hist_txt or "(none)", new="\n".join(new_texts))
     streaming = AGENT_KINDS.get(kind, {}).get("stream", False)
     if kind == "codex":
@@ -731,6 +852,13 @@ def _bridge_turn(new_texts):
         argv = [bin_, "-p", "--model", BRIDGE_MODEL, "--dangerously-skip-permissions",
                 "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
                 "--no-session-persistence",
+                # Partial chunks are the WHOLE reason a board build survives. Without
+                # this flag an assistant message is emitted only when it is finished,
+                # so composing a 15KB panel is several minutes of byte-for-byte
+                # silence on stdout - indistinguishable from a hang, and the watchdog
+                # killed it at 90s every time (2026-08-17: two Daily-lane boards died
+                # at "Writing the board now"). With it, every delta is proof of life.
+                "--include-partial-messages",
                 "--output-format", "stream-json", "--verbose"]  # verbose is REQUIRED for stream-json in -p mode
         stdin_mode = subprocess.PIPE
     if os.environ.get("AGENT_ARGS"):
@@ -782,7 +910,6 @@ def _bridge_turn(new_texts):
         text_parts, result_text = [], None
         for line in _iter_lines(proc):
             last_event[0] = time.time()      # proof of life; resets the watchdog
-            in_tool[0] = None                # a line means the tool came back
             line = line.strip()
             if not line:
                 continue
@@ -796,6 +923,16 @@ def _bridge_turn(new_texts):
             except Exception:
                 continue
             et = ev.get("type")
+            if et == "stream_event":
+                # A chunk of a message still being written. Proof of life ONLY:
+                # it does NOT mean a running tool came back, so in_tool stays as
+                # it is - clearing it here would drop a legitimately slow tool
+                # from its 600s allowance back to the 90s idle limit.
+                delta = (ev.get("event") or {}).get("delta") or {}
+                if delta.get("type") == "input_json_delta":
+                    _bridge["step"] = "composing"   # the long one: writing a panel
+                continue
+            in_tool[0] = None                # a completed event = the tool came back
             if et == "assistant":
                 for blk in (ev.get("message", {}).get("content") or []):
                     if blk.get("type") == "tool_use":
@@ -848,28 +985,46 @@ def _bridge_loop():
             msgs = _read_jsonl(INBOX, 100000)
             if len(msgs) <= seen:
                 continue
-            new = [str(m.get("text", "")) for m in msgs[seen:]]
+            fresh = msgs[seen:]
             seen = len(msgs)
-            _bridge["status"] = "thinking"
-            _bridge["since"] = round(time.time(), 1)
-            _bridge["steps"] = 0
-            _bridge["step"] = ""
-            t0 = time.time()
-            try:
-                reply = _bridge_turn(new)
-            except subprocess.TimeoutExpired:
-                reply = (f"Bridge error: the agent went quiet for "
-                         f"{BRIDGE_IDLE_TIMEOUT}s and was stopped.")
-            except Exception as e:
-                reply = f"Bridge error: {str(e)[:150]}"
-            _bridge["last_ms"] = int((time.time() - t0) * 1000)
-            _bridge["turns"] += 1
-            entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "role": "assistant",
-                     "text": reply.strip()[:1500]}
-            with _chat_lock:
-                with OUTBOX.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(entry) + "\n")
-            _journal_log("bridge", f"({_bridge['steps']} steps, {_bridge['last_ms'] // 1000}s) {reply[:160]}")
+            # Group by lane and run ONE TURN PER LANE, in the order the lanes were
+            # first spoken to. Sending in Daily and then Paper inside the same 1.5s
+            # tick used to concatenate both into a single prompt; the reply then
+            # landed in whichever lane happened to be tagged, answering out of the
+            # wrong brain in the wrong window.
+            groups, order = {}, []
+            for m in fresh:
+                ln = _lane_of(m.get("lane"))
+                if ln not in groups:
+                    groups[ln] = []
+                    order.append(ln)
+                groups[ln].append(str(m.get("text", "")))
+
+            for ln in order:
+                _bridge["status"] = "thinking"
+                _bridge["lane"] = ln
+                _bridge["since"] = round(time.time(), 1)
+                _bridge["steps"] = 0
+                _bridge["step"] = ""
+                t0 = time.time()
+                try:
+                    reply = _bridge_turn(groups[ln], lane=ln)
+                except subprocess.TimeoutExpired:
+                    reply = (f"Bridge error: the agent went quiet for "
+                             f"{BRIDGE_IDLE_TIMEOUT}s and was stopped.")
+                except Exception as e:
+                    reply = f"Bridge error: {str(e)[:150]}"
+                _bridge["last_ms"] = int((time.time() - t0) * 1000)
+                _bridge["turns"] += 1
+                # The reply carries the SAME lane as the question. Without this the
+                # answer is invisible in the lane that asked it.
+                entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "role": "assistant",
+                         "lane": ln, "text": reply.strip()[:1500]}
+                with _chat_lock:
+                    with OUTBOX.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps(entry) + "\n")
+                _journal_log("bridge", f"[{ln}] ({_bridge['steps']} steps, "
+                                       f"{_bridge['last_ms'] // 1000}s) {reply[:160]}")
             _bridge["status"] = "idle"
         except Exception as e:
             _bridge["error"] = str(e)[:140]
@@ -888,6 +1043,7 @@ BOT_GET = {"status", "positions", "orders", "equity", "radar", "reddit",
            "paper/unprotected",  # paper positions with no working exit
            "scanlog",         # every decision from the last scan, incl. rejects
            "changed",         # the latest "what changed" diff (see also /api/brief)
+           "trail-plan",      # per-symbol LIVE trail widths + which names need a read
            "shutdown-check"}  # is anything working that must not be abandoned
 
 
@@ -949,10 +1105,16 @@ EDITABLE = {
 }
 
 
+# Which bin each editable file lives in after the _app/_data split. Anything not
+# listed here stays at the workspace root, which is where the docs you actually
+# read (RULES.md, AGENTS.md, CLAUDE.md, PROMPTS.md) belong.
+_IN_DATA = {"memory.md", "config.json"}
+
+
 def _editable_path(name: str):
     if name not in EDITABLE:
         return None
-    return WORK / name
+    return (DATA if name in _IN_DATA else WORK) / name
 
 
 def _write_atomic(path: Path, text: str):
@@ -1094,7 +1256,159 @@ def _bot_post(path: str, body: dict, timeout=45):
 # honest lifetime, and every run appends to journal.jsonl where the JOURNAL tab
 # already renders it.
 # ---------------------------------------------------------------------------
-SCHEDULE_FILE = WORK / "schedule.json"
+SCHEDULE_FILE = DATA / "schedule.json"
+
+# ---------------------------------------------------------------- consensus
+# The Investment Council workspace, vendored UNMODIFIED at
+# TheTradingBrains/MoneyTrader/consensus/. We never reimplement his pipeline -
+# stage 01 is his Python, stages 02-06 are run by the copilot inside that
+# folder. This desk only kicks off stage 01 and RENDERS what landed on disk.
+CONSENSUS = WORK / "TheTradingBrains" / "MoneyTrader" / "consensus"
+
+_CONSENSUS_STAGES = [
+    ("01 fetch", "stages/01_fetch/output/metadata.json"),
+    ("02 analyst signals", "stages/02_analyst_signals/output"),
+    ("03 consensus", "stages/03_consensus/output"),
+    ("04 risk", "stages/04_risk/output"),
+    ("05 decision", "stages/05_decision/output"),
+    ("06 report", "stages/06_report/output"),
+]
+
+
+def _cons_json(rel):
+    """Read one JSON artifact out of the workspace. Never throws."""
+    try:
+        p = CONSENSUS / rel
+        if p.is_file():
+            return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return None
+
+
+def _cons_first(dir_rel, *names):
+    """First matching file in a stage output dir - his stage names vary a little
+    between runs, so match a list rather than hardcoding one filename."""
+    try:
+        d = CONSENSUS / dir_rel
+        if not d.is_dir():
+            return None
+        for n in names:
+            for p in d.glob(n):
+                if p.is_file():
+                    return p
+    except Exception:
+        pass
+    return None
+
+
+def _cons_rows(obj):
+    """His stages write either a bare list or a dict wrapping one. Accept both
+    rather than guessing - a shape change should degrade to empty, not 500."""
+    if isinstance(obj, list):
+        return [r for r in obj if isinstance(r, dict)]
+    if isinstance(obj, dict):
+        for k in ("consensus", "rows", "tickers", "results", "decisions", "items"):
+            v = obj.get(k)
+            if isinstance(v, list):
+                return [r for r in v if isinstance(r, dict)]
+    return []
+
+
+def _consensus_read():
+    if not CONSENSUS.is_dir():
+        return {"ok": False, "error": "Consensus workspace not installed",
+                "hint": f"Expected it at {CONSENSUS}. It is the vendored "
+                        "vikd1000/investment-council repo."}
+
+    meta = _cons_json("stages/01_fetch/output/metadata.json") or {}
+    run_id = meta.get("run_id") or meta.get("runId") or ""
+
+    # Stage freshness. His CLAUDE.md rule is that a stage whose inputs carry a
+    # DIFFERENT run_id is stale and must not be mixed into a report. That check
+    # is the single best idea in the repo, so it gets surfaced in the UI rather
+    # than living only in the agent's instructions.
+    stages = []
+    for name, rel in _CONSENSUS_STAGES:
+        p = CONSENSUS / rel
+        # An EMPTY output directory is "not run", not "current". The repo ships
+        # these folders (with .gitkeep), so an existence check alone reported all
+        # five downstream stages as current on a workspace that had never been
+        # run once - a stale/absent answer reading as complete, which is the one
+        # failure mode this whole panel exists to prevent.
+        produced = []
+        if p.is_dir():
+            produced = [f for f in p.rglob("*")
+                        if f.is_file() and not f.name.startswith(".")
+                        and f.name.lower() != "context.md"]
+        elif p.is_file():
+            produced = [p]
+        if not produced:
+            stages.append({"name": name, "state": "not run", "run_id": ""})
+            continue
+        got = ""
+        for f in sorted(x for x in produced if x.suffix == ".json"):
+            d = _cons_json(str(f.relative_to(CONSENSUS)))
+            if isinstance(d, dict) and (d.get("run_id") or d.get("runId")):
+                got = d.get("run_id") or d.get("runId")
+                break
+        if not got and p.is_file():
+            got = run_id
+        # No run_id stamped anywhere = we cannot prove it matches. Say so rather
+        # than assuming it is fine.
+        state = ("stale" if (run_id and got and got != run_id)
+                 else "current" if got and got == run_id
+                 else "unstamped")
+        stages.append({"name": name, "state": state, "run_id": got})
+
+    cons = _cons_rows(_cons_json("stages/03_consensus/output/consensus.json"))
+    if not cons:
+        f = _cons_first("stages/03_consensus/output", "*.json")
+        if f:
+            cons = _cons_rows(_cons_json(str(f.relative_to(CONSENSUS))))
+
+    dec = _cons_rows(_cons_json("stages/05_decision/output/decisions.json"))
+    if not dec:
+        f = _cons_first("stages/05_decision/output", "*.json")
+        if f:
+            dec = _cons_rows(_cons_json(str(f.relative_to(CONSENSUS))))
+
+    brief = ""
+    bf = _cons_first("stages/06_report/output", "investment_brief.md", "*.md")
+    if bf:
+        try:
+            brief = bf.read_text(encoding="utf-8", errors="replace")[:60000]
+        except Exception:
+            pass
+
+    if not (cons or dec or brief) and not run_id:
+        return {"ok": False, "error": "No run yet",
+                "hint": "Fill in setup/questionnaire.md inside the consensus "
+                        "folder, then press 'Run stage 01 - fetch'.",
+                "stages": stages}
+
+    return {"ok": True, "run_id": run_id, "run_date": meta.get("date") or meta.get("run_date") or "",
+            "consensus": cons, "decisions": dec, "brief": brief, "stages": stages}
+
+
+def _consensus_fetch():
+    """Run HIS stage 01 script, unmodified, as a subprocess. Not imported: it
+    wants yfinance and its own cwd, and a dependency of a vendored third-party
+    script must never be able to take this server down."""
+    script = CONSENSUS / "stages" / "01_fetch" / "fetch.py"
+    if not script.is_file():
+        return {"ok": False, "error": f"not found: {script}"}
+    try:
+        r = subprocess.run([sys.executable, str(script)], cwd=str(CONSENSUS),
+                           capture_output=True, text=True, timeout=600)
+        log = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()[-6000:]
+        if r.returncode != 0:
+            return {"ok": False, "error": f"stage 01 exited {r.returncode}", "log": log}
+        return {"ok": True, "log": log}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "stage 01 timed out after 10 minutes"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
 _sched_lock = threading.Lock()
 _sched_state = {"runs": []}          # in-memory ring of recent runs
 
@@ -1540,7 +1854,15 @@ class Handler(BaseHTTPRequestHandler):
             # and the sidebar is the list of days that do have messages.
             q = urllib.parse.parse_qs(qs)
             day = (q.get("day", [""])[0] or "")[:10]
+            # Lane filter. One physical bus, three views - the file-bus contract
+            # every agent and doc depends on stays exactly one inbox and one
+            # outbox, and the lane is a FIELD, not a new pair of files.
+            # Untagged history (everything written before 2026-08-16) reads as
+            # the default lane rather than vanishing.
+            lane = _lane_of(q.get("lane", [""])[0])
             inbox, outbox = _read_jsonl(INBOX, 4000), _read_jsonl(OUTBOX, 4000)
+            inbox = [m for m in inbox if _lane_of(m.get("lane")) == lane]
+            outbox = [m for m in outbox if _lane_of(m.get("lane")) == lane]
             allm = inbox + outbox
             sess = {}
             for m in allm:
@@ -1659,6 +1981,9 @@ class Handler(BaseHTTPRequestHandler):
                                    "text": target.read_text(encoding="utf-8")[:20000]})
             except Exception as e:
                 return self._json({"ok": False, "error": str(e)[:200]}, 500)
+
+        if path == "/api/consensus":
+            return self._json(_consensus_read())
 
         if path == "/api/schedule":
             s = _sched_load()
@@ -1865,7 +2190,7 @@ class Handler(BaseHTTPRequestHandler):
                 finfo(RULES, "RULES.md", "Your written trading plan"),
                 finfo(MEMORY, "memory.md", "Standing orders injected into every turn"),
                 finfo(WORK / "PROMPTS.md", "PROMPTS.md", "Prompts that reliably work"),
-                finfo(WORK / "config.json", "config.json", "Ports, model, theme, Voicebox"),
+                finfo(DATA / "config.json", "config.json", "Ports, model, theme, Voicebox"),
                 finfo(BOT_HOME / ".env", "bot/.env", "Your keys. Never displayed, never committed."),
                 finfo(JOURNAL, "journal.jsonl", "Every scan, chat, order and board"),
                 finfo(INBOX, "chat-inbox.jsonl", "What you said"),
@@ -2039,15 +2364,26 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self._json({"error": "bad json"}, 400)
 
+        if parsed.path == "/api/consensus/fetch":
+            # Stage 01 only. Stages 02-06 are the copilot's job by design - they
+            # are the part that needs judgement, and running them from a button
+            # would hide the per-stage review the whole workspace is built on.
+            r = _consensus_fetch()
+            _journal_log("consensus", "stage 01 fetch: " + ("ok" if r.get("ok")
+                                                            else str(r.get("error"))[:120]))
+            return self._json(r, 200 if r.get("ok") else 500)
+
         if parsed.path == "/api/chat/send":
             text = str(body.get("text") or "").strip()
             if not text:
                 return self._json({"error": "empty"}, 400)
-            entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "role": "user", "text": text}
+            lane = _lane_of(body.get("lane"))
+            entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "role": "user",
+                     "lane": lane, "text": text}
             with _chat_lock:
                 with INBOX.open("a", encoding="utf-8") as f:
                     f.write(json.dumps(entry) + "\n")
-            _journal_log("chat", text[:160])
+            _journal_log("chat", f"[{lane}] " + text[:160])
             return self._json({"ok": True})
 
         if parsed.path == "/api/shell/open":
@@ -2648,6 +2984,37 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"ok": False, "error": f"bot unreachable: {str(e)[:120]}"}, 502)
 
+        if parsed.path == "/api/bot/trail-plan":
+            # Set one symbol's LIVE trail width. With apply:true the engine also
+            # cancels the working exit and re-arms at the new width, in that order.
+            # Journalled either way: a width change IS a decision, and the CSCO
+            # mess on 08-16 was only reconstructable because the sweep printed.
+            try:
+                raw, code = _bot_post("trail-plan", body, timeout=45)
+                try:
+                    r = json.loads(raw)
+                    sym = r.get("symbol") or body.get("symbol")
+                    if r.get("cleared"):
+                        _journal_log("note", f"TRAIL PLAN cleared for {sym}; falls back "
+                                             f"to the {r.get('falls_back_to')}% placeholder")
+                    elif r.get("ok"):
+                        _journal_log("order" if r.get("applied") else "note",
+                                     f"TRAIL PLAN {sym} -> {r.get('trail_pct')}%"
+                                     + (" and RE-ARMED now" if r.get("applied")
+                                        else " (governs the sweep from here; the "
+                                             "existing stop is unchanged)")
+                                     + (f" - {body.get('why')}" if body.get("why") else ""))
+                    else:
+                        _journal_log("note", f"TRAIL PLAN FAILED {sym}: "
+                                             f"{str(r.get('error'))[:140]}")
+                except Exception:
+                    pass
+                return self._raw(raw, "application/json", code)
+            except urllib.error.HTTPError as e:
+                return self._raw(e.read(), "application/json", e.code)
+            except Exception as e:
+                return self._json({"ok": False, "error": f"bot unreachable: {str(e)[:120]}"}, 502)
+
         if parsed.path == "/api/bot/run/radar":
             try:
                 raw, code = _bot_post("run/radar", {}, timeout=90)
@@ -2670,6 +3037,7 @@ def build_server():
     WORK.mkdir(parents=True, exist_ok=True)
     BOT_HOME.mkdir(parents=True, exist_ok=True)
     (BOT_HOME / "data").mkdir(parents=True, exist_ok=True)
+    DATA.mkdir(parents=True, exist_ok=True)
     PANELS.mkdir(exist_ok=True)
     SHOTS.mkdir(exist_ok=True)
     SAVED.mkdir(exist_ok=True)
@@ -2678,10 +3046,19 @@ def build_server():
         # whole point is that an update cannot touch what the user has edited.
         # CLAUDE.md has to be here rather than in the program folder, because the
         # copilot runs with the workspace as its cwd and auto-loads it from there.
-        for name in ("AGENTS.md", "CLAUDE.md", "PROMPTS.md", "config.json"):
+        for name in ("AGENTS.md", "CLAUDE.md", "PROMPTS.md"):
             src, dst = resource_path(name), WORK / name
             if src.exists() and not dst.exists():
                 dst.write_bytes(src.read_bytes())
+    # config.json seeds into _data/ from the shipped default in _app/, in BOTH
+    # source and packaged runs - a source checkout has no _data/config.json
+    # until the first boot either, and booting with no config at all means the
+    # port and bot_base fall back to hardcoded defaults silently.
+    _cfg_dst = DATA / "config.json"
+    if not _cfg_dst.exists():
+        _cfg_src = APP / "config.default.json"
+        if _cfg_src.exists():
+            _cfg_dst.write_bytes(_cfg_src.read_bytes())
         wel = resource_path("panels") / "00-welcome.html"
         if wel.exists() and not (PANELS / "00-welcome.html").exists():
             (PANELS / "00-welcome.html").write_bytes(wel.read_bytes())

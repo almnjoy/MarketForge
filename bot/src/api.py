@@ -116,6 +116,48 @@ def _protect_save(rows):
         print(f"[protect] could not persist queue: {e}")
 
 
+def _trail_plan_load():
+    """{SYMBOL: {trail_pct, why, ts}} - the per-symbol LIVE trail widths."""
+    try:
+        d = json.loads(config.TRAIL_PLAN_PATH.read_text(encoding="utf-8"))
+        return {str(k).upper(): v for k, v in d.items()} if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _trail_plan_save(plan):
+    try:
+        config.TRAIL_PLAN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        config.TRAIL_PLAN_PATH.write_text(json.dumps(plan, indent=1), encoding="utf-8")
+        return True
+    except Exception as e:
+        print(f"[trail-plan] could not persist: {e}")
+        return False
+
+
+def sweep_trail_for(venue, symbol):
+    """The trail width the sweep should arm, and WHERE it came from.
+
+    Operator's policy, 2026-08-17: paper keeps one blanket width because that book
+    is unwatched and the A/B needs to be comparable; live is evaluated per name.
+
+    A live symbol with no plan entry still gets armed - at the placeholder - and is
+    reported as such. The alternative is a naked position while someone decides on
+    a number, and that trade has already been made once.
+    """
+    if venue == "paper":
+        return float(config.SWEEP_TRAIL_PCT_PAPER), "paper blanket failsafe"
+    row = _trail_plan_load().get(str(symbol).upper()) or {}
+    try:
+        pct = float(row.get("trail_pct"))
+    except (TypeError, ValueError):
+        pct = None
+    if pct and pct > 0:
+        why = str(row.get("why") or "").strip()
+        return pct, f"per-symbol plan{' - ' + why[:80] if why else ''}"
+    return float(config.SWEEP_TRAIL_PCT_LIVE), "PLACEHOLDER - this name has no evaluated width yet"
+
+
 def _protect_queue_add(order_id, symbol, trail_pct, venue=None):
     if not order_id:
         return
@@ -449,8 +491,9 @@ def _protect_pass(venue):
                           f"stop needs at least 1 whole share, so this position cannot "
                           f"be auto-protected. Close it by hand, or size in whole shares.")
                     continue
+                trail, source = sweep_trail_for(venue, sym)
                 try:
-                    res = arm_trail(client, sym, config.SWEEP_TRAIL_PCT)
+                    res = arm_trail(client, sym, trail)
                 except Exception as e:
                     res = {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
                 # arm_trail RETURNS a status dict, it does not raise. Treating a
@@ -458,7 +501,7 @@ def _protect_pass(venue):
                 # pass, so the cap never engaged and the sweep retried forever.
                 if res.get("ok"):
                     _sweep_attempts.pop(key, None)
-                    print(f"[protect/{venue}] sweep-armed {sym} at {config.SWEEP_TRAIL_PCT}%")
+                    print(f"[protect/{venue}] sweep-armed {sym} at {trail}% ({source})")
                 else:
                     n = _sweep_attempts.get(key, 0) + 1
                     _sweep_attempts[key] = n
@@ -723,12 +766,20 @@ def api_scanlog():
     to see what a floor was throwing away, or to tune it. This is what the
     RADAR > Scoring tab renders.
     """
+    # `radar.SCANLOG_PATH` died in the 2026-08-13 lane split and the bare `except`
+    # turned that AttributeError into "no scan log yet" - so the Scoring tab read
+    # EMPTY for four days while the file on disk had every rejection in it. Read the
+    # lane's own path, and let a genuinely missing file be the only empty answer.
     try:
-        import radar
-        return jsonify(json.loads(radar.SCANLOG_PATH.read_text(encoding="utf-8")))
-    except Exception:
+        import scan_live
+        p = scan_live.LANE.scanlog_path
+        if p.exists():
+            return jsonify(json.loads(p.read_text(encoding="utf-8")))
         return jsonify({"rows": [], "alerted": 0, "skipped": 0,
                         "note": "no scan log yet - run a scan"})
+    except Exception as e:
+        return jsonify({"rows": [], "alerted": 0, "skipped": 0,
+                        "note": f"scan log unreadable: {e.__class__.__name__}: {str(e)[:120]}"})
 
 
 @app.get("/api/changed")
@@ -782,7 +833,7 @@ def api_paper_protect():
     if not symbol:
         return jsonify({"ok": False, "error": "symbol required"}), 400
     try:
-        trail = float(body.get("trail_pct") or config.SWEEP_TRAIL_PCT)
+        trail = float(body.get("trail_pct") or config.SWEEP_TRAIL_PCT_PAPER)
     except Exception:
         return jsonify({"ok": False, "error": "trail_pct must be a number"}), 400
     try:
@@ -957,6 +1008,107 @@ def api_protect():
         return jsonify(res), (200 if res.get("ok") else 400)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:300]}), 502
+
+
+@app.route("/api/trail-plan", methods=["GET"])
+def api_trail_plan_get():
+    """The per-symbol LIVE trail widths, plus which live positions still have none.
+
+    `needs_eval` is the actionable half: those are live positions currently riding
+    the placeholder width, waiting on a per-name read. They ARE protected. They are
+    just protected by a default, which is exactly what the operator asked to stop
+    relying on live.
+    """
+    plan = _trail_plan_load()
+    needs, held = [], []
+    try:
+        for p in (AlpacaClient().list_positions() or []):
+            sym = p.get("symbol")
+            if not sym:
+                continue
+            held.append(sym)
+            if sym.upper() not in plan:
+                needs.append(sym)
+    except Exception as e:
+        return jsonify({"plan": plan, "needs_eval": [], "live_positions": [],
+                        "paper_trail_pct": config.SWEEP_TRAIL_PCT_PAPER,
+                        "live_placeholder_pct": config.SWEEP_TRAIL_PCT_LIVE,
+                        "error": str(e)[:200]}), 200
+    return jsonify({"plan": plan, "needs_eval": needs, "live_positions": held,
+                    "paper_trail_pct": config.SWEEP_TRAIL_PCT_PAPER,
+                    "live_placeholder_pct": config.SWEEP_TRAIL_PCT_LIVE})
+
+
+@app.route("/api/trail-plan", methods=["POST"])
+def api_trail_plan_set():
+    """Set (or clear) one symbol's LIVE trail width.
+
+    Body: {symbol, trail_pct, why, apply?: bool}. `trail_pct: 0` or null removes the
+    entry and the symbol falls back to the placeholder.
+
+    `apply: true` also RE-ARMS the position now: cancel the working exits, arm the
+    new width. Without it the plan only governs what the sweep does from here on,
+    which does nothing for a position already riding a 10% stop. Re-arming is the
+    whole point of changing a width, and doing it by hand across two calls is how
+    a position ends up briefly naked.
+    """
+    body = request.get_json(silent=True) or {}
+    symbol = str(body.get("symbol", "")).upper().strip()
+    if not symbol:
+        return jsonify({"ok": False, "error": "symbol required"}), 400
+    raw = body.get("trail_pct")
+    plan = _trail_plan_load()
+    if raw in (None, "", 0, "0"):
+        plan.pop(symbol, None)
+        _trail_plan_save(plan)
+        return jsonify({"ok": True, "symbol": symbol, "cleared": True,
+                        "falls_back_to": config.SWEEP_TRAIL_PCT_LIVE})
+    try:
+        trail = float(raw)
+        assert 0.5 <= trail <= 50
+    except Exception:
+        return jsonify({"ok": False, "error": "trail_pct must be 0.5-50 (percent)"}), 400
+    plan[symbol] = {"trail_pct": trail, "why": str(body.get("why") or "")[:300],
+                    "ts": time.time()}
+    if not _trail_plan_save(plan):
+        return jsonify({"ok": False, "error": "could not persist the plan"}), 500
+
+    out = {"ok": True, "symbol": symbol, "trail_pct": trail, "applied": False}
+    if body.get("apply"):
+        client = AlpacaClient()
+        # Cancel first, then arm. arm_trail REFUSES a position that is already
+        # covered, so re-arming without cancelling silently leaves the old width
+        # in place and reports nothing wrong.
+        cancelled = []
+        try:
+            pos = {p.get("symbol"): p for p in (client.list_positions() or [])}
+            p = pos.get(symbol)
+            if not p:
+                return jsonify({**out, "ok": False,
+                                "error": f"plan saved, but there is no open live "
+                                         f"position in {symbol} to re-arm"}), 400
+            # ONLY the exit side. A working BUY on a long is an ENTRY, and
+            # cancelling it here would quietly kill a trade the operator is filling.
+            side = _exit_side(float(p.get("qty") or 0))
+            raw_orders = client._req("GET", client.trade_base, "/v2/orders",
+                                     params={"status": "open", "limit": 200})
+            for o in (raw_orders or []):
+                if o.get("symbol") != symbol or str(o.get("side")) != side:
+                    continue
+                client.cancel_order(o.get("id"))
+                cancelled.append(o.get("id"))
+        except Exception as e:
+            return jsonify({**out, "ok": False,
+                            "error": f"saved the plan but could not cancel the old "
+                                     f"exit: {str(e)[:200]}"}), 502
+        if cancelled:
+            time.sleep(1.5)          # let the cancels settle before re-arming
+        res = arm_trail(client, symbol, trail)
+        out.update({"applied": bool(res.get("ok")), "cancelled": cancelled,
+                    "arm": res})
+        if not res.get("ok"):
+            return jsonify({**out, "ok": False}), 400
+    return jsonify(out)
 
 
 @app.get("/api/bars")

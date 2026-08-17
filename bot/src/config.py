@@ -254,6 +254,11 @@ RADAR_MIN_MOVE_PCT = float(_get("RADAR_MIN_MOVE_PCT", 5.0))   # percent, e.g. 5 
 # Price floor filters out the low-float penny/halted junk that dominates raw
 # top-movers lists (the pump-and-dumps, not real catalysts). Default $3.
 RADAR_MIN_PRICE_CENTS = int(_get("RADAR_MIN_PRICE_CENTS", 300))
+# Pre-market / weekend / holiday, the movers feed still serves the LAST COMPLETED
+# session, so a scan then measures each close against itself and skips the whole
+# board as "screener stale". The live lane refuses that scan and says so. Set true
+# only to look at the prior session's movers on purpose.
+RADAR_SCAN_CLOSED_MARKET = (_get("RADAR_SCAN_CLOSED_MARKET", "false") or "false").lower() == "true"
 # --- FEED AWARENESS --------------------------------------------------------
 # THE TRAP THIS EXISTS TO CLOSE: a dollar-volume floor is calibrated to the feed
 # that measured it. IEX is a few percent of the consolidated tape, so the SAME
@@ -318,6 +323,20 @@ def feed_banner():
 # seven times and ranked the wrapper above the company. Set false to see them.
 RADAR_SKIP_LEVERAGED = (_get("RADAR_SKIP_LEVERAGED", "true") or "true").lower() == "true"
 RADAR_TRAIL_PCT = float(_get("RADAR_TRAIL_PCT", 0.10))        # suggested trailing stop
+# A catalyst has to be TODAY'S news. On 2026-08-17 SIC scored 85 "signal" off a
+# Benzinga article from OCTOBER 2021 (Sun Capital's $14.50 buyout) - which is also
+# why it printed at $14.49: that ticker has been dead since the deal closed. Any
+# headline older than this is dropped BEFORE the scorer sees it, so an ancient
+# story can never explain a move. Items with no timestamp are kept (unknown age is
+# not proof of staleness). 0 disables the check.
+RADAR_MAX_HEADLINE_AGE_DAYS = int(_get("RADAR_MAX_HEADLINE_AGE_DAYS", 14))
+# Reject a "mover" with NO daily bar history at all. Zero bars is not an IPO, it is
+# an instrument this desk cannot evaluate: no ATR, no stop reference, and - the
+# real hole - no dollar volume, so the liquidity floor SKIPPED it. That floor is
+# the junk filter now that the price floor is gone, and it was silently not
+# running on the junkiest names: AESPW, a $0.06 warrant, walked straight through.
+# One bar still passes, because a genuine first-session IPO has one.
+RADAR_REQUIRE_BARS = (_get("RADAR_REQUIRE_BARS", "true") or "true").lower() == "true"
 RADAR_DISCORD_WEBHOOK = _get("RADAR_DISCORD_WEBHOOK", "") or ""
 
 # LLM curation of radar alerts (triage real catalyst vs noise; never predicts).
@@ -380,6 +399,22 @@ SWEEP_TRAIL_PCT = float(_get("SWEEP_TRAIL_PCT", "") or RADAR_AUTO_TRAIL_PCT * 10
 # Give up on a symbol after this many failed arm attempts so one un-armable
 # position (odd asset class, halted, fractional qty) cannot spam the log forever.
 SWEEP_MAX_ATTEMPTS = int(_get("SWEEP_MAX_ATTEMPTS", 3))
+
+# --- PER-VENUE trail width (operator's call, 2026-08-17) -------------------
+# PAPER keeps the blanket 10% failsafe on purpose: that book is unwatched, and a
+# uniform width is the only thing that makes the trail A/B in memory.md
+# comparable across trades.
+#
+# LIVE is PER SYMBOL, from an evaluation of that name (how far it actually runs,
+# where the structure breaks) - not from a default. So SWEEP_TRAIL_PCT_LIVE is
+# NOT "the live trail". It is the PLACEHOLDER the sweep arms on a live position
+# that has no plan entry yet, because a generic exit beats no exit and never-naked
+# is the one promise this app makes. When the sweep uses it, it says so, and the
+# symbol lands on `needs_eval` at GET /api/trail-plan so it gets a real width.
+SWEEP_TRAIL_PCT_PAPER = float(_get("SWEEP_TRAIL_PCT_PAPER", "") or SWEEP_TRAIL_PCT)
+SWEEP_TRAIL_PCT_LIVE = float(_get("SWEEP_TRAIL_PCT_LIVE", "") or SWEEP_TRAIL_PCT)
+# Per-symbol live widths: {"CSCO": {"trail_pct": 5.0, "why": "...", "ts": ...}}
+TRAIL_PLAN_PATH = DATA_DIR / "trail-plan.json"
 
 # --- HTTP client -----------------------------------------------------------
 HTTP_MAX_RETRIES = int(_get("HTTP_MAX_RETRIES", 5))

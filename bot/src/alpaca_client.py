@@ -190,12 +190,24 @@ class AlpacaClient:
         } for b in raw]
         return bars[-limit:]
 
-    def get_latest_price(self, symbol) -> int:
+    def get_latest_trade(self, symbol) -> dict:
+        """Latest trade WITH its timestamp: {"price_cents": int, "at": RFC-3339 str}.
+
+        The timestamp is the point. Outside the session the "latest" trade is the
+        LAST SESSION'S CLOSING PRINT, so anything that compares it to that session's
+        close is comparing a number to itself and getting 0.0% - which the radar then
+        reported as a verified move (2026-08-17: 18 of 20 pre-market candidates
+        killed that way). Callers that care about staleness read `at`.
+        """
         feed = config._get("ALPACA_DATA_FEED", "iex")
         data = self._req("GET", self.data_base, f"/v2/stocks/{symbol}/trades/latest",
                         params={"feed": feed})
         trade = data.get("trade") or {}
-        return dollars_to_cents(trade.get("p", 0))
+        return {"price_cents": dollars_to_cents(trade.get("p", 0)),
+                "at": str(trade.get("t", "") or "")}
+
+    def get_latest_price(self, symbol) -> int:
+        return self.get_latest_trade(symbol)["price_cents"]
 
     # --- news + movers (for the catalyst radar) ----------------------------
     def get_news(self, symbols=None, limit=10) -> list:

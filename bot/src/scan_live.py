@@ -22,7 +22,7 @@ path, which is off by default and gated on the same breaker the dashboard shows.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import config
 import db
@@ -39,6 +39,68 @@ def discipline_note(price, cfg=config):
             f"IPOs / low-float names are the highest-risk version.")
 
 
+def fresh_news(news, cfg=config):
+    """Drop headlines too old to be today's catalyst. Returns (kept, dropped_n).
+
+    The scorer is asked "does this news explain this move", and it answers yes to
+    a perfectly good story from four years ago. On 2026-08-17 SIC came back 85 and
+    "signal" on Sun Capital's OCTOBER 2021 $14.50 buyout - a deal that closed, on a
+    ticker that has not traded since, printing at $14.49 because that IS the deal
+    price. A stale headline does not read as stale, it reads as a catalyst.
+
+    An item with NO parseable timestamp is KEPT. Unknown age is not evidence of
+    staleness, and dropping it would silently blind the scorer on any feed whose
+    date field is shaped differently.
+    """
+    days = int(getattr(cfg, "RADAR_MAX_HEADLINE_AGE_DAYS", 0) or 0)
+    if days <= 0 or not news:
+        return list(news or []), 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    kept, dropped = [], 0
+    for n in news:
+        raw = str(n.get("created_at") or n.get("at") or n.get("updated_at") or "")
+        when = None
+        if raw:
+            try:
+                when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=timezone.utc)
+            except Exception:
+                when = None
+        if when is not None and when < cutoff:
+            dropped += 1
+            continue
+        kept.append(n)
+    return kept, dropped
+
+
+def feed_session_is_stale(client):
+    """Is the movers feed serving a session that has already CLOSED?
+
+    Returns (stale, session_date). The screener endpoint always returns the CURRENT
+    session's movers - and before the bell "current" means the last completed one.
+    Pre-market, on weekends and on holidays every candidate's latest trade IS that
+    session's closing print, so the move math measures a close against itself, reads
+    0.0%, and the whole board gets skipped as "the screener number was stale". On
+    2026-08-17 that killed 18 of 20 candidates and the scan reported a quiet tape.
+
+    After the close is NOT stale: the feed is that day's real session and the math
+    works. So the test is "market shut AND today has no daily bar yet", not "shut".
+
+    Fails OPEN - a clock hiccup must never be able to silence a scan.
+    """
+    try:
+        if (client.get_clock() or {}).get("is_open"):
+            return False, ""
+        bars = client.get_daily_bars("SPY", limit=1) or []
+        last = str(bars[-1].get("t", ""))[:10] if bars else ""
+    except Exception:
+        return False, ""
+    if last and last != datetime.now().strftime("%Y-%m-%d"):
+        return True, last
+    return False, ""
+
+
 def verify_pct(client, sym, price, screener_pct, cfg=config):
     """Authoritative move math. The screener's percent_change AND price are UNTRUSTED:
     par-priced SPAC/warrant math, unadjusted reverse splits and stale after-hours
@@ -48,12 +110,24 @@ def verify_pct(client, sym, price, screener_pct, cfg=config):
     Returns (pct, price, is_ipo, verified). On a data gap the screener numbers pass
     through with verified=False so the alert can SAY it is unverified; fewer than 2
     real daily bars is a genuine IPO, flagged rather than corrected.
+
+    OUR number can be the stale one. When the latest trade is not NEWER than the last
+    completed session, `cur` and `prev` are the same closing print and the answer is
+    0.0% - not a verified flat tape, an unanswerable question. That case now returns
+    verified=False instead of a confident zero.
     """
-    cur = price
+    cur, cur_day = price, ""
     try:
-        lp = client.get_latest_price(sym)
-        if lp:
-            cur = lp / 100.0
+        getter = getattr(client, "get_latest_trade", None)
+        if getter:
+            t = getter(sym) or {}
+            if t.get("price_cents"):
+                cur = t["price_cents"] / 100.0
+                cur_day = str(t.get("at", ""))[:10]
+        else:
+            lp = client.get_latest_price(sym)
+            if lp:
+                cur = lp / 100.0
     except Exception:
         pass
     try:
@@ -62,7 +136,13 @@ def verify_pct(client, sym, price, screener_pct, cfg=config):
         if len(rows) < 2:
             return screener_pct, cur, True, False
         today = datetime.now().strftime("%Y-%m-%d")
-        prev_cents = rows[-2][1] if rows[-1][0] == today else rows[-1][1]
+        last_day = rows[-1][0]
+        if last_day == today:
+            prev_cents = rows[-2][1]
+        else:
+            prev_cents = rows[-1][1]
+            if cur_day and cur_day <= last_day:
+                return screener_pct, cur, False, False
         prev = prev_cents / 100.0
         if prev > 0 and cur > 0:
             return round((cur - prev) / prev * 100.0, 2), cur, False, True
@@ -73,6 +153,17 @@ def verify_pct(client, sym, price, screener_pct, cfg=config):
 
 def scan(client, conn, cfg=config, autotrade=None):
     """One pass of the live lane. Returns the alert list, ranked."""
+    stale, session = feed_session_is_stale(client)
+    if stale and not getattr(cfg, "RADAR_SCAN_CLOSED_MARKET", False):
+        msg = (f"movers feed is still {session}'s completed session - the bell has not "
+               f"rung, so every 'mover' is that session's close measured against "
+               f"itself. Nothing to scan until the open.")
+        print(f"[live] {msg}")
+        log = sc.ScanLog(LANE)
+        log.skip("(feed)", msg)
+        log.write()
+        return []
+
     try:
         movers = client.get_movers(top=cfg.RADAR_TOP_N)
     except Exception as e:
@@ -134,12 +225,29 @@ def scan(client, conn, cfg=config, autotrade=None):
                           f"was stale or split-skewed", pct=pct, price=price)
             continue
 
+        # ONE bar fetch, feeding two gates. It used to live inside `if floor:`,
+        # which meant the history question was only ever asked when a liquidity
+        # floor happened to be set.
+        try:
+            bars = client.get_daily_bars(sym, limit=25)
+        except Exception:
+            bars = None
+
+        # NO history at all. Not an IPO - an instrument this lane cannot evaluate.
+        # This is also what closed the hole below: with no bars there is no dollar
+        # volume, so `adv` came back None and the floor let the name through.
+        if not bars and getattr(cfg, "RADAR_REQUIRE_BARS", True):
+            log.skip(sym, "no daily bar history - no ATR, no stop reference and no "
+                          "dollar volume, so the liquidity floor cannot judge it "
+                          "(dead ticker, warrant or untradable class)",
+                     pct=pct, price=price)
+            continue
+
         floor = getattr(cfg, "RADAR_MIN_DOLLAR_VOLUME", 0)
         adv = None
         if floor:
             try:
                 import signals
-                bars = client.get_daily_bars(sym, limit=25)
                 adv = signals.avg_dollar_volume(bars) if bars else None
             except Exception:
                 adv = None
@@ -161,9 +269,10 @@ def scan(client, conn, cfg=config, autotrade=None):
             claimed["ok"] = True
 
         def _score():
-            headlines, url = [], ""
+            headlines, url, stale = [], "", 0
             try:
                 news = client.get_news(symbols=[sym], limit=4)
+                news, stale = fresh_news(news, cfg)
                 headlines = [n.get("headline", "") for n in news if n.get("headline")]
                 if news:
                     url = news[0].get("url", "") or ""
@@ -173,10 +282,10 @@ def scan(client, conn, cfg=config, autotrade=None):
             if rb:
                 for bp in rb.get("posts", [])[:2]:
                     headlines.append(f"[Reddit r/{bp['sub']} {bp['score']}pts] {bp['title']}")
-            return classify(sym, pct, price, headlines, cfg), headlines, url, rb
+            return classify(sym, pct, price, headlines, cfg), headlines, url, rb, stale
 
         def _finalize(res):
-            verdict, headlines, url, rb = res
+            verdict, headlines, url, rb, stale = res
             score = verdict["score"] if verdict else None
             vlabel = verdict["verdict"] if verdict else ""
             ctype = verdict["catalyst_type"] if verdict else ""
@@ -190,6 +299,11 @@ def scan(client, conn, cfg=config, autotrade=None):
             elif not verified:
                 note = ("Move math UNVERIFIED (bars/latest unavailable): % and price are "
                         "screener-reported and may be stale or split-skewed. ") + note
+            if stale:
+                note = (f"{stale} headline(s) withheld from the scorer as older than "
+                        f"{cfg.RADAR_MAX_HEADLINE_AGE_DAYS} days. If the verdict below "
+                        f"reads thin, that is why - there is no fresh news explaining "
+                        f"this move. ") + note
             if rb:
                 note = f"Reddit buzz: {rb['mentions']} mention(s) in hot posts right now. " + note
 

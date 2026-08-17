@@ -52,9 +52,29 @@ trying for 6 hours; a sweep every 30s flags anything still naked. `/api/protect`
 exists because there was previously **no way** to attach an exit to a position that
 already existed. Read `CLAUDE.md` before touching any of this.
 
+### Trail width is per venue, and on live it is per symbol (2026-08-17)
+
+| | |
+|---|---|
+| `GET /api/bot/trail-plan` | the per-symbol live widths, plus `needs_eval`: live positions riding the placeholder |
+| `POST /api/bot/trail-plan` | `{symbol, trail_pct, why, apply?}`. `trail_pct: 0` clears the entry |
+
+PAPER keeps one blanket width (`SWEEP_TRAIL_PCT_PAPER`, 10%) because that book is
+unwatched and a uniform width is what makes the trail A/B in `memory.md` comparable.
+LIVE widths come from an evaluation of the name and live in `data/trail-plan.json`.
+
+`SWEEP_TRAIL_PCT_LIVE` is **not** the live trail. It is the placeholder the sweep
+arms on a live name with no entry yet, because a generic exit beats no exit. Those
+names appear in `needs_eval`.
+
+`apply: true` also re-arms **now**: cancel the working exit, then arm. That order is
+load-bearing - `arm_trail` refuses an already-covered position, so re-arming without
+cancelling leaves the old width silently in place and reports success. It cancels
+only orders on the position's EXIT side, so a working entry is never touched.
+
 ## TradingView
 
-Requires `run-tradingview.bat` (Chrome with the DevTools protocol on :9222).
+Requires `run-tradingview.bat` (Chrome with the DevTools protocol on :9223).
 
 | | |
 |---|---|

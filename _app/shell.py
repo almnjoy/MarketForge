@@ -42,6 +42,16 @@ from pathlib import Path
 
 FROZEN = bool(getattr(sys, "frozen", False))
 
+# This module lives in _app/ since the 2026-08-16 root split, but `import app`
+# has to resolve app.py at the repo ROOT. In a frozen build both are flattened
+# into the bundle and this is a no-op; in a dev run (`python _app/shell.py`)
+# without it, the window comes up and every route 404s because `app` never
+# imported.
+if not FROZEN:
+    _ROOT = Path(__file__).resolve().parent.parent
+    if str(_ROOT) not in sys.path:
+        sys.path.insert(0, str(_ROOT))
+
 # Scripts the exe may be asked to run as its own children. Anything else on
 # argv is a mistake - refuse loudly rather than boot a second desk.
 _CHILD_SCRIPTS = ("run_bot.py", "radar.py")

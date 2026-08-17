@@ -28,8 +28,8 @@ echo ""
 echo "Next: guided setup - it takes your Alpaca keys, checks them, and detects"
 echo "whether your account has real-time data."
 echo ""
-cd "$DEST" && "$PY" setup.py </dev/tty || \
-  echo "  (run it later with:  cd $DEST && $PY setup.py)"
+cd "$DEST" && "$PY" _app/setup.py </dev/tty || \
+  echo "  (run it later with:  cd $DEST && $PY _app/setup.py)"
 
 echo ""
 echo "  Start the desk:  MF_EMBEDDED=1 $PY $DEST/app.py  ->  http://localhost:8410"

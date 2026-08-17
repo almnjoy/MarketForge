@@ -159,7 +159,7 @@ const LANES = {
     label: 'Live Trader', brain: 'MoneyTrader',
     blurb: 'The swing brain on real money. Every entry STAGES and waits for you.',
     views: { overview: 'view-overview', radar: 'view-radar',
-             settings: 'view-lane-settings' },
+             consensus: 'view-consensus', settings: 'view-lane-settings' },
   },
   paper: {
     label: 'Paper Trader', brain: 'PaperTrader',
@@ -179,8 +179,13 @@ function showLane(lane, sub) {
 
   document.querySelectorAll('#tabs button').forEach(
     (x) => x.classList.toggle('on', x.dataset.lane === LANE));
-  document.querySelectorAll('#lanetabs button').forEach(
-    (x) => x.classList.toggle('on', x.dataset.lanesub === LANE_SUB));
+  // Hide any sub-tab this lane has no view for. Consensus is Live-only, and a
+  // button that switches to a blank pane is worse than no button.
+  document.querySelectorAll('#lanetabs button').forEach((x) => {
+    const has = !!cfg.views[x.dataset.lanesub];
+    x.style.display = has ? '' : 'none';
+    x.classList.toggle('on', has && x.dataset.lanesub === LANE_SUB);
+  });
   const bar = document.querySelector('#lanetabs');
   if (bar) bar.style.display = '';
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('on', v.id === id));
@@ -192,8 +197,118 @@ function showLane(lane, sub) {
     if (s === 'retail') loadReddit(); else if (s === 'brief') loadBrief();
     else if (s === 'scoring') loadScanlog(); else loadRadar();
   } else if (LANE === 'live' && LANE_SUB === 'overview') { loadChart(); }
+  else if (LANE === 'live' && LANE_SUB === 'consensus') { loadConsensus(); }
   else if (LANE === 'paper' && LANE_SUB === 'overview') { loadPaper(); }
 }
+
+/* ---------- Consensus Report (vendored Investment Council) ----------
+   Deliberately a RENDERER, not a reimplementation. His pipeline stays exactly
+   as published in TheTradingBrains/MoneyTrader/consensus/; the server reads
+   whatever the newest run wrote and hands it over. If a stage has not been run,
+   we say which one and how to run it rather than showing an empty page. */
+function consensusScoreCell(v) {
+  const n = Number(v);
+  if (!isFinite(n)) return '<td class="mut">' + esc(v == null ? '-' : v) + '</td>';
+  // Same thresholds his risk-rules.md uses, so the colour and the sizing agree.
+  const k = n >= 70 ? 'up' : n >= 55 ? '' : n >= 45 ? 'mut' : 'down';
+  return '<td class="' + k + '"><b>' + n.toFixed(0) + '</b></td>';
+}
+
+async function loadConsensus() {
+  const body = $('#consensusBody'), run = $('#consensusRun');
+  if (!body) return;
+  body.innerHTML = '<span class="mut">loading...</span>';
+  let j;
+  try {
+    j = await (await fetch('/api/consensus')).json();
+  } catch (e) {
+    body.innerHTML = '<div class="card">Could not reach the desk: ' + esc(e) + '</div>';
+    return;
+  }
+  if (run) run.textContent = j.run_id ? ('run ' + j.run_id + (j.run_date ? ' - ' + j.run_date : '')) : '';
+
+  if (!j.ok) {
+    body.innerHTML = '<div class="card"><b>' + esc(j.error || 'Not set up yet') + '</b>'
+      + '<p class="mut" style="margin:8px 0 0">' + esc(j.hint || '') + '</p></div>';
+    return;
+  }
+
+  let h = '';
+
+  // 1. The heat map - the actual product. Disagreement is the signal.
+  if (j.consensus && j.consensus.length) {
+    h += '<div class="card"><b>Consensus</b>'
+      + '<p class="mut" style="margin:4px 0 10px">Average score across the panel, and how many of '
+      + 'them are bullish. The <i>spread</i> is the point - unanimous is rarely interesting.</p>'
+      + '<table class="tbl"><tr><th>Ticker</th><th>Avg</th><th>Bullish</th><th>Bearish</th>'
+      + '<th>Neutral</th><th>Signal</th></tr>';
+    j.consensus.forEach((r) => {
+      h += '<tr><td><b>' + esc(r.ticker) + '</b></td>'
+        + consensusScoreCell(r.avg_score)
+        + '<td class="up">' + esc(r.bullish ?? '-') + '</td>'
+        + '<td class="down">' + esc(r.bearish ?? '-') + '</td>'
+        + '<td class="mut">' + esc(r.neutral ?? '-') + '</td>'
+        + '<td>' + esc(r.signal || '-') + '</td></tr>';
+    });
+    h += '</table></div>';
+  }
+
+  // 2. Decisions - BUY/ADD/HOLD/REDUCE/SELL/PASS
+  if (j.decisions && j.decisions.length) {
+    h += '<div class="card"><b>Decisions</b><table class="tbl">'
+      + '<tr><th>Ticker</th><th>Call</th><th>Size</th><th>Why</th></tr>';
+    j.decisions.forEach((d) => {
+      const call = String(d.action || '').toUpperCase();
+      const k = /BUY|ADD/.test(call) ? 'up' : /SELL|REDUCE/.test(call) ? 'down' : 'mut';
+      h += '<tr><td><b>' + esc(d.ticker) + '</b></td>'
+        + '<td class="' + k + '"><b>' + esc(call || '-') + '</b></td>'
+        + '<td class="mono">' + esc(d.size || d.amount || '-') + '</td>'
+        + '<td class="mut">' + esc(d.rationale || d.reason || '') + '</td></tr>';
+    });
+    h += '</table></div>';
+  }
+
+  // 3. The written brief, verbatim.
+  if (j.brief) {
+    h += '<div class="card"><b>Investment brief</b>'
+      + '<pre class="mono" style="white-space:pre-wrap;margin-top:10px">' + esc(j.brief) + '</pre></div>';
+  }
+
+  // 4. Which stages have actually run. A stale stage reading as current is the
+  //    exact failure his run_id guard exists to prevent - surface it, do not hide it.
+  if (j.stages) {
+    h += '<div class="card"><b>Pipeline</b><table class="tbl">'
+      + '<tr><th>Stage</th><th>State</th><th>Run</th></tr>';
+    j.stages.forEach((s) => {
+      const k = s.state === 'current' ? 'up' : s.state === 'stale' ? 'down' : 'mut';
+      h += '<tr><td>' + esc(s.name) + '</td><td class="' + k + '"><b>' + esc(s.state)
+        + '</b></td><td class="mono mut">' + esc(s.run_id || '-') + '</td></tr>';
+    });
+    h += '</table>'
+      + '<p class="mut" style="margin:10px 0 0">Stages 02-06 run through the copilot. Ask it: '
+      + '<code>run stage 02 in the consensus workspace</code>, one at a time, checking the output '
+      + 'between each.</p></div>';
+  }
+
+  body.innerHTML = h || '<div class="card">Nothing written yet. Run stage 01, then ask the copilot for stage 02.</div>';
+}
+
+if ($('#consensusReload')) $('#consensusReload').onclick = loadConsensus;
+if ($('#consensusFetch')) $('#consensusFetch').onclick = async () => {
+  const b = $('#consensusFetch'), body = $('#consensusBody');
+  if (b) { b.disabled = true; b.textContent = 'fetching...'; }
+  try {
+    const j = await (await fetch('/api/consensus/fetch', { method: 'POST' })).json();
+    if (!j.ok && body) {
+      body.innerHTML = '<div class="card"><b>Stage 01 failed</b><pre class="mono" '
+        + 'style="white-space:pre-wrap;margin-top:8px">' + esc(j.error || j.log || '') + '</pre></div>';
+    } else { await loadConsensus(); }
+  } catch (e) {
+    if (body) body.innerHTML = '<div class="card">Could not run stage 01: ' + esc(e) + '</div>';
+  } finally {
+    if (b) { b.disabled = false; b.textContent = 'Run stage 01 - fetch'; }
+  }
+};
 
 async function loadLaneSettings() {
   const cfg = LANES[LANE];
@@ -1267,6 +1382,48 @@ const msgKey = m => `${m.ts}|${m.role}|${String(m.text).length}|${String(m.text)
 // Conversations are grouped by DAY. chatDay '' means today (the live one).
 // A new day therefore opens an empty chat by itself - nothing gets deleted.
 let chatDay = '';
+
+/* ---------- copilot lanes: four chats, one bus ----------
+   Manual routing. The operator picks the brain with a button instead of the
+   model inferring it from wording, because a wrong inference answers
+   confidently out of the wrong playbook and leaves no trace of which one it
+   read. Every message carries its lane, and each tab shows only its own.
+   chatDay is tracked PER LANE - switching to Daily should not drop you into
+   whatever historical day you were reading in Paper. */
+const CHAT_LANES = {
+  workshop: 'bugs, research and anything that spans the three lanes - the only lane that changes the app',
+  daily: 'Brain 3 - intraday momentum, low float, same-session',
+  live: 'the swing brain on real money - stages, waits for your click',
+  paper: 'the same swing brain, auto-fired - the study twin, and the only venue that can short',
+};
+let chatLane = 'workshop';
+const chatDayByLane = {};
+
+function setChatLane(lane) {
+  if (!(lane in CHAT_LANES)) lane = 'workshop';
+  chatDayByLane[chatLane] = chatDay;      // remember where we were
+  chatLane = lane;
+  chatDay = chatDayByLane[lane] || '';
+  document.querySelectorAll('#chatlanes button').forEach(
+    (b) => b.classList.toggle('on', b.dataset.chatlane === lane));
+  const note = $('#chatLaneNote');
+  if (note) note.textContent = CHAT_LANES[lane];
+  const inp = $('#chatInput');
+  if (inp) {
+    inp.placeholder = lane === 'workshop'
+      ? 'Bugs, research, refactors - anything about the desk itself...'
+      : 'Ask about this lane, or tell me what to build...';
+  }
+  // A lane switch is a different conversation: force a full repaint and a
+  // scroll to the end rather than diffing against the previous lane's count.
+  chatCount = -1; chatInit = false;
+  $('#chatLog').innerHTML = '<div class="dim" style="padding:10px">loading...</div>';
+  loadChat();
+}
+
+document.querySelectorAll('#chatlanes button[data-chatlane]').forEach(
+  (b) => b.onclick = () => setChatLane(b.dataset.chatlane));
+
 function renderDays(d) {
   const box = $('#chatDays'); if (!box) return;
   const today = d.today, days = d.days || [];
@@ -1291,7 +1448,8 @@ function renderDays(d) {
 }
 
 async function loadChat() {
-  const d = await J('/api/chat' + (chatDay ? `?day=${chatDay}` : '')).catch(() => null);
+  const q = '?lane=' + encodeURIComponent(chatLane) + (chatDay ? `&day=${chatDay}` : '');
+  const d = await J('/api/chat' + q).catch(() => null);
   if (!d) return;
   renderDays(d);
   const msgs = [...d.inbox, ...d.outbox].sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
@@ -1782,7 +1940,7 @@ async function sendChat() {
   // Sending always lands in TODAY. If you were reading an old day, jump back to
   // the live conversation rather than posting into a view that will not update.
   if (chatDay) { chatDay = ''; chatCount = -1; chatInit = false; }
-  await J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: t }) });
+  await J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: t, lane: chatLane }) });
   loadChat();
 }
 $('#chatSend').onclick = sendChat;
@@ -1978,7 +2136,7 @@ async function hotStart() {
       transcribe(wavEncode(utter, rate)).then((text) => {
         if (text.length > 2)
           J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text }) }).then(loadChat);
+            body: JSON.stringify({ text, lane: chatLane }) }).then(loadChat);
       }).catch(() => {                             // fail quiet, but say it ONCE
         if (!hotWarned) { hotWarned = true; notify('hot mic: transcription failing - is Voicebox up?', 'warn'); }
       });
@@ -2011,7 +2169,7 @@ function srHotStart() {
     const text = [...e.results].slice(e.resultIndex).map(r => r[0].transcript).join(' ').trim();
     if (text.length > 2)
       J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }) }).then(loadChat);
+        body: JSON.stringify({ text, lane: chatLane }) }).then(loadChat);
   };
   srHot.onend = () => { if (hotOn) { try { srHot.start(); } catch {} } };  // Chrome kills long sessions - relight
   srHot.onerror = (e) => { if (e.error === 'not-allowed') hotToggle(false); };
@@ -2143,7 +2301,7 @@ const tabTo = (name) => {
   document.querySelector(`[data-tab=${name}]`)?.click();
 };
 async function palChat(text) {
-  await J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+  await J('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, lane: chatLane }) });
   tabTo('copilot'); loadChat();
   notify('sent to copilot', 'info', false);
 }
@@ -2314,7 +2472,8 @@ J('/api/meta').then(m => {
   initTheme(m.theme);                        // config default, if nothing saved locally
   setTimeout(() => { if ($('#ttsToggle').checked) speakText(`Welcome back, ${window._user}.`); }, 1200);
 }).catch(() => {});
-loadOverview(); loadChart(); pickDefaultChart(); loadRadar(); loadReddit(); loadPanels(true); loadRules(); loadChat(); loadNaked(); loadStaged();
+setChatLane(chatLane);   // paints the lane note + placeholder, then loads the chat
+loadOverview(); loadChart(); pickDefaultChart(); loadRadar(); loadReddit(); loadPanels(true); loadRules(); loadNaked(); loadStaged();
 setInterval(loadOverview, 15000);
 setInterval(loadNaked, 20000);   // an unarmed position must surface fast
 // The copilot writes staged-trade.json mid-turn, so this needs the same cadence
